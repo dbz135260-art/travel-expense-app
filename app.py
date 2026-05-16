@@ -823,26 +823,22 @@ def render_tab_travel(api_key, project_name, project_code):
     for fd in file_data:
         p_name = fd.get("姓名", "")
         amt = fd.get("金额", 0)
-        insurance = fd.get("保险费", 0)
-        file_type = fd.get("文件类型", "")
         date_str = fd.get("日期", "")
 
         matched = False
         for t in teachers:
             t_name = t["姓名"]
             if p_name and (p_name in t_name or t_name in p_name):
-                total = amt + insurance if (file_type == "飞机行程单" and insurance > 0) else amt
-                teacher_amounts[t_name] += total
-                teacher_details[t_name].append(total)
+                teacher_amounts[t_name] += amt
+                teacher_details[t_name].append(amt)
                 if date_str:
                     teacher_dates[t_name].append(date_str)
                 matched = True
                 break
-        if not matched and p_name and total > 0:
+        if not matched and p_name and amt > 0:
             teachers.append({"姓名": p_name, "银行卡号": ""})
-            total = amt + insurance if (file_type == "飞机行程单" and insurance > 0) else amt
-            teacher_amounts[p_name] = total
-            teacher_details[p_name] = [total]
+            teacher_amounts[p_name] = amt
+            teacher_details[p_name] = [amt]
             if date_str:
                 teacher_dates[p_name] = [date_str]
 
@@ -880,7 +876,7 @@ def render_tab_travel(api_key, project_name, project_code):
             if not teacher_name:
                 teacher_name = p_name
 
-            amt = fd.get("金额", 0) + (fd.get("保险费", 0) if fd.get("文件类型") == "飞机行程单" and fd.get("保险费", 0) > 0 else 0)
+            amt = fd.get("金额", 0)
             date_str = fd.get("日期", "")
             if date_str:
                 try:
