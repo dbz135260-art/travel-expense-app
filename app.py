@@ -784,10 +784,29 @@ def render_tab_travel(api_key, project_name, project_code):
             st.warning(f"LLM解析部分失败: {e}，从文件名提取")
 
     # Fallback: extract names from filenames
+    PLACE_WORDS = {"大连","郑州","北京","上海","广州","深圳","天津","重庆",
+                   "南京","西安","杭州","成都","武汉","昆明","厦门","长沙"}
+    SKIP_WORDS = PLACE_WORDS | {"保险发票","行程单","电子发票","航空运输","客票行程单"}
     for fd in file_data:
         if not fd.get("姓名"):
-            cn_names = re.findall(r'[一-鿿]{2,4}', Path(fd["文件名"]).stem)
-            fd["姓名"] = cn_names[-1] if cn_names else "未知"
+            stem = Path(fd["文件名"]).stem
+            m = re.search(r'_([一-鿿]{2,4})\s+\d{2}月', stem)
+            if m:
+                fd["姓名"] = m.group(1)
+            else:
+                cn_names = re.findall(r'[一-鿿]{2,4}', stem)
+                clean = [n for n in cn_names if n not in SKIP_WORDS]
+                fd["姓名"] = clean[-1] if clean else "未知"
+
+    # Correct LLM-place names with filename
+    teacher_names = {t["姓名"] for t in teachers}
+    for fd in file_data:
+        llm_name = fd.get("姓名", "")
+        if llm_name and llm_name not in teacher_names:
+            stem = Path(fd["文件名"]).stem
+            m = re.search(r'_([一-鿿]{2,4})\s+\d{2}月', stem)
+            if m and m.group(1) in teacher_names:
+                fd["姓名"] = m.group(1)
 
     progress_bar.progress(0.8, text="匹配老师和金额...")
 
@@ -819,7 +838,7 @@ def render_tab_travel(api_key, project_name, project_code):
                     teacher_dates[t_name].append(date_str)
                 matched = True
                 break
-        if not matched and p_name:
+        if not matched and p_name and total > 0:
             teachers.append({"姓名": p_name, "银行卡号": ""})
             total = amt + insurance if (file_type == "飞机行程单" and insurance > 0) else amt
             teacher_amounts[p_name] = total
