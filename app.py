@@ -914,21 +914,35 @@ def render_tab_travel(api_key, project_name, project_code):
 def render_tab_labor(project_name, project_code):
     """老师劳务费发放——从信息库拉取，或粘贴完整信息"""
     st.subheader("老师劳务费发放")
-    st.markdown("从信息库拉取或粘贴老师信息，补充执行时间/标准/学时")
+    st.markdown("从信息库拉取或粘贴老师信息")
 
     # Use teacher DB or paste
     use_db = st.checkbox("从老师信息库拉取银行卡号/身份证号/手机号",
                          value=bool(st.session_state.teacher_db), key="labor_use_db")
 
+    # Default values for 标准 and 学时
+    col_a, col_b = st.columns(2)
+    with col_a:
+        default_rate = st.number_input("默认标准（元/学时）", min_value=0.0, value=1000.0, step=100.0, key="labor_rate")
+    with col_b:
+        default_hours = st.number_input("默认学时", min_value=0.0, value=8.0, step=1.0, key="labor_hours")
+
     info_text = st.text_area(
-        "粘贴数据，每行一位老师。格式：姓名 执行时间 标准(元/学时) 学时 工作内容（可选）",
-        placeholder="李阳  5月13日上午  讲课  13911080938  222325197012140317  6222600910058226273  1000  4\n王芳  5月15日全天  讲课  13601023762  110108196512152251  9558800200125094454  1000  8\n（自动识别字段，信息库已有则银行/手机/身份证自动补全）",
-        height=200, key="labor_info"
+        "粘贴数据（只需姓名和执行时间，标准和学时用默认值，有则覆盖）",
+        placeholder="李阳  5月13日上午  讲课  13911080938  222325197012140317  6222600910058226273\n王芳  5月15日全天  讲课  13601023762  110108196512152251  9558800200125094454\n（或每行末尾加数字：姓名 时间 标准 学时 → 覆盖默认值）",
+        height=150, key="labor_info"
     )
 
     teachers = []
     if info_text.strip():
         teachers = parse_teacher_info(info_text.strip())
+        # Apply defaults if not set by paste
+        for t in teachers:
+            if not t.get("标准") or t["标准"] == 0:
+                t["标准"] = default_rate
+            if not t.get("学时") or t["学时"] == 0:
+                t["学时"] = default_hours
+
         # Merge with DB
         if use_db and st.session_state.teacher_db:
             db_lookup = {t["姓名"]: t for t in st.session_state.teacher_db}
@@ -942,13 +956,11 @@ def render_tab_labor(project_name, project_code):
                     if not t.get("银行卡号") and db_entry.get("银行卡号"):
                         t["银行卡号"] = db_entry["银行卡号"]
 
-        valid = [t for t in teachers if t.get("标准") and t.get("学时")]
-        if valid:
-            st.dataframe(valid, use_container_width=True, hide_index=True)
-            st.success(f"识别到 {len(valid)} 条有效记录")
-            teachers = valid
+        if teachers:
+            st.dataframe(teachers, use_container_width=True, hide_index=True)
+            st.success(f"识别到 {len(teachers)} 位老师")
         else:
-            st.warning("缺少标准(元/学时)或学时字段，请在每行末尾加上数字")
+            st.warning("未识别到有效数据")
             teachers = []
 
     if st.button("🚀 生成劳务费Excel", type="primary", key="labor_btn"):
