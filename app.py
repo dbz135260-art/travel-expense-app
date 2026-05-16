@@ -507,9 +507,6 @@ def main():
 def render_tab_subsidy(api_key, project_name):
     """原差旅补助计算功能"""
     st.subheader("差旅补助计算")
-    surname_prefix = st.text_input("姓氏前缀", value="段",
-                                   key="subsidy_prefix",
-                                   help="文件名前缀：'段 刘延川 4月15日 880.00.pdf'")
 
     uploaded_files = st.file_uploader("上传PDF行程单", type=["pdf"], accept_multiple_files=True,
                                       key="subsidy_files")
@@ -612,7 +609,7 @@ def render_tab_subsidy(api_key, project_name):
                 disp_date = f"{dt.month}月{dt.day}日"
             except:
                 disp_date = d_str
-            new_name = f"{surname_prefix} {person_name} {disp_date} {fare:.2f}.pdf"
+            new_name = f"{person_name} {disp_date} {fare:.2f}.pdf"
             results.append({
                 "姓名": person_name, "日期": d_str, "票面金额": fare,
                 "基础补助": base, "额外补助": extra, "总金额": total_person,
@@ -827,7 +824,7 @@ def render_tab_travel(api_key, project_name, project_code):
         amt = teacher_amounts.get(name, 0)
         detail = teacher_details.get(name, [])
         output_teachers.append({
-            "姓名": name,
+            "姓名": f"段 {name}",
             "银行卡号": t.get("银行卡号", ""),
             "实发金额": amt,
             "明细金额": detail
