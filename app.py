@@ -13,6 +13,7 @@ import requests
 st.set_page_config(page_title="差旅/劳务费处理", page_icon="🧾", layout="wide")
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 # ─── OFD Parser ────────────────────────────────────────
 
@@ -89,7 +90,7 @@ def extract_pdf_text(file_bytes: bytes) -> str:
 def call_deepseek(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
-        "model": "deepseek-chat",
+        "model": DEEPSEEK_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
