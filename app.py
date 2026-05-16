@@ -2,7 +2,7 @@ import streamlit as st
 import json
 import io
 import zipfile
-import time
+from datetime import datetime, date
 from typing import List, Dict
 import fitz
 import requests
@@ -15,52 +15,41 @@ st.set_page_config(
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-SYSTEM_PROMPT = """你是一个差旅单据处理助手。从上传的PDF行程单中提取信息并计算补助。
+SYSTEM_PROMPT = """你是一个差旅单据处理助手。从上传的PDF行程单中提取信息。
 
-每个文件是一个差旅行程单。请严格按以下规则处理：
+每个文件是一个航空电子客票行程单。对每个文件提取以下字段：
+1. 姓名 - 旅客姓名
+2. 日期 - 出发日期（格式：YYYY-MM-DD）
+3. 票面金额 - 电子客票行程单上的"合计"金额（数字，单位：元）
+4. 类型 - 判断这张票是"出发"还是"返程"还是"中转"
 
-## 提取字段
-1. 姓名
-2. 行程日期（出发日期，格式：YYYY-MM-DD）
-3. 票面金额（交通费用，数字，单位：元）
+类型判断规则：
+- 从常住地出发 → "出发"
+- 返回常住地 → "返程"
+- 两个非常住地之间的行程 → "中转"
 
-## 补助计算规则
-- 基础补助 = 100元/天 × 行程天数
-- 额外补助 = 出发日+80元 + 返程日+80元 + 中转日+80元（如有中转）
-- 总金额 = 基础补助 + 额外补助（不含票面金额）
+如果你不确定常住地，根据行程判断：去程为"出发"，回程为"返程"。
 
-## 输出格式
-必须返回纯JSON数组，不要包含其他任何文字或markdown标记：
+输出纯JSON数组，不要markdown标记：
 [
   {
-    "姓名": "张三",
-    "日期": "2024-03-15",
-    "票面金额": 538.00,
-    "基础补助": 200.00,
-    "额外补助": 160.00,
-    "总金额": 360.00,
-    "文件名": "张三_2024-03-15_538.00.pdf"
+    "姓名": "刘延川",
+    "日期": "2026-04-15",
+    "票面金额": 880.00,
+    "类型": "出发",
+    "文件名": "行程单_刘延川 04月15日 大连-郑州_xxx.pdf"
   }
 ]
 
-最后一条记录必须是一个汇总行：
-  {
-    "姓名": "合计",
-    "日期": "",
-    "票面金额": <所有票面金额总和>,
-    "基础补助": <所有基础补助总和>,
-    "额外补助": <所有额外补助总和>,
-    "总金额": <所有总金额总和>,
-    "文件名": ""
-  }"""
+只提取原始数据，不要计算任何补助。"""
 
 USER_PROMPT_TEMPLATE = """项目名称：{project_name}
 
-以下是所有PDF文件提取出的文字内容，请按规则处理：
+以下是所有PDF文件提取出的文字内容，请提取信息：
 
 {pdf_texts}
 
-请返回JSON数组，包含每个人的明细和最后一条合计行。"""
+返回JSON数组。"""
 
 
 def extract_pdf_text(file_bytes: bytes) -> str:
@@ -121,6 +110,94 @@ def create_renamed_zip(original_files: Dict[str, bytes], rename_map: Dict[str, s
     return buf.getvalue()
 
 
+def calc_subsidy(items: List[Dict], surname_prefix: str) -> Dict:
+    """Calculate subsidies from extracted items, return processed results"""
+    # Group by person
+    persons = {}
+    for item in items:
+        name = item.get("姓名", "未知")
+        if name not in persons:
+            persons[name] = []
+        persons[name].append(item)
+
+    results = []
+    total_fare = 0
+    total_base = 0
+    total_extra = 0
+    total_all = 0
+
+    for person_name, tickets in persons.items():
+        # Sort by date
+        tickets.sort(key=lambda x: x.get("日期", ""))
+
+        dates = []
+        departures = 0
+        returns = 0
+        transfers = 0
+
+        for t in tickets:
+            try:
+                d = datetime.strptime(str(t.get("日期", "")), "%Y-%m-%d").date()
+                dates.append(d)
+            except:
+                pass
+            tp = t.get("类型", "")
+            if tp == "出发":
+                departures += 1
+            elif tp == "返程":
+                returns += 1
+            else:
+                transfers += 1
+
+        if not dates:
+            continue
+
+        min_date = min(dates)
+        max_date = max(dates)
+        travel_days = (max_date - min_date).days + 1
+
+        base_subsidy = travel_days * 100
+        extra_subsidy = (departures + returns + transfers) * 80
+        total_person = base_subsidy + extra_subsidy
+
+        for t in tickets:
+            fare = float(t.get("票面金额", 0))
+            d_str = str(t.get("日期", ""))
+            # Try to convert date to display format like "4月15日"
+            try:
+                dt = datetime.strptime(d_str, "%Y-%m-%d")
+                display_date = f"{dt.month}月{dt.day}日"
+            except:
+                display_date = d_str
+
+            new_filename = f"{surname_prefix} {person_name} {display_date} {fare:.2f}.pdf"
+
+            results.append({
+                "姓名": person_name,
+                "日期": d_str,
+                "票面金额": fare,
+                "基础补助": base_subsidy,
+                "额外补助": extra_subsidy,
+                "总金额": total_person,
+                "原文件名": t.get("文件名", ""),
+                "新文件名": new_filename
+            })
+
+            total_fare += fare
+
+        total_base += base_subsidy
+        total_extra += extra_subsidy
+        total_all += total_person
+
+    return {
+        "items": results,
+        "total_fare": total_fare,
+        "total_base": total_base,
+        "total_extra": total_extra,
+        "total_all": total_all
+    }
+
+
 def main():
     st.title("🧾 差旅补助计算器")
     st.markdown("上传PDF行程单，自动提取信息、计算补助、生成改名文件")
@@ -131,19 +208,19 @@ def main():
         api_key = st.text_input("DeepSeek API Key", type="password",
                                 help="https://platform.deepseek.com/ 获取")
         project_name = st.text_input("项目名称", value="默认项目")
+        surname_prefix = st.text_input("姓氏前缀", value="段",
+                                       help="文件名前缀，如'段' → '段 刘延川 4月15日 880.00.pdf'")
         st.markdown("---")
         st.markdown("### 补助规则")
         st.markdown("""
 - 基础补助：100元/天
-- 额外补助：
-  - 出发日：+80元
-  - 返程日：+80元
-  - 中转日：+80元
+- 额外补助：80元/次（每次出发/返程/中转）
 - 总金额 = 基础补助 + 额外补助
+- 行程天数 = 最晚日期 - 最早日期 + 1
         """)
         st.markdown("---")
         st.markdown("### 改名规则")
-        st.markdown("`姓名_日期_票面金额.pdf`")
+        st.markdown("`{姓氏前缀} {姓名} {月}日 {金额}.pdf`")
 
     # Main area
     uploaded_files = st.file_uploader(
@@ -158,7 +235,6 @@ def main():
 
     st.success(f"已上传 {len(uploaded_files)} 个文件")
 
-    # Process button
     col1, col2 = st.columns([1, 5])
     with col1:
         process_btn = st.button("🚀 开始处理", type="primary", use_container_width=True)
@@ -170,7 +246,6 @@ def main():
         st.error("请在左侧输入 DeepSeek API Key")
         st.stop()
 
-    # Progress
     progress_bar = st.progress(0, text="解析PDF中...")
     status_text = st.empty()
 
@@ -187,7 +262,7 @@ def main():
 
     combined_text = "\n\n---\n\n".join(pdf_texts)
 
-    # Step 2: Call DeepSeek
+    # Step 2: Call DeepSeek (extract only, no calculation)
     status_text.text("正在调用 DeepSeek API...")
     progress_bar.progress(0.6, text="正在调用 DeepSeek API...")
 
@@ -202,7 +277,7 @@ def main():
         st.error(f"API调用失败: {str(e)}")
         st.stop()
 
-    progress_bar.progress(0.8, text="正在解析结果...")
+    progress_bar.progress(0.8, text="正在计算补助...")
 
     # Step 3: Parse result
     try:
@@ -210,12 +285,11 @@ def main():
     except json.JSONDecodeError as e:
         st.error(f"解析LLM返回结果失败: {str(e)}")
         st.markdown("**原始返回内容：**")
-        st.code(raw_response[:2000])
+        st.code(raw_response[:3000])
         st.stop()
 
-    # Separate summary row
-    summary = data[-1] if data and data[-1].get("姓名") == "合计" else None
-    items = data[:-1] if summary else data
+    # Step 4: Python does the calculation
+    result = calc_subsidy(data, surname_prefix)
 
     progress_bar.progress(1.0, text="完成！")
     status_text.text("✅ 处理完成")
@@ -227,48 +301,41 @@ def main():
     st.subheader("明细")
     table_data = []
     rename_map = {}
-    for item in items:
+    for item in result["items"]:
         table_data.append({
-            "姓名": item.get("姓名", ""),
-            "日期": item.get("日期", ""),
-            "票面金额": item.get("票面金额", 0),
-            "基础补助": item.get("基础补助", 0),
-            "额外补助": item.get("额外补助", 0),
-            "总金额": item.get("总金额", 0),
+            "姓名": item["姓名"],
+            "日期": item["日期"],
+            "票面金额": item["票面金额"],
+            "基础补助": item["基础补助"],
+            "额外补助": item["额外补助"],
+            "总金额": item["总金额"],
+            "新文件名": item["新文件名"]
         })
-        fname = item.get("文件名", "")
-        if fname:
-            rename_map[fname] = fname  # new name
-
-    # Map original -> new names
-    for i, item in enumerate(items):
-        new_name = item.get("文件名", "")
-        if new_name and i < len(uploaded_files):
-            rename_map[uploaded_files[i].name] = new_name
+        orig = item["原文件名"]
+        new = item["新文件名"]
+        if orig and orig in file_map:
+            rename_map[orig] = new
 
     st.dataframe(table_data, use_container_width=True, hide_index=True)
 
     # Summary
-    if summary:
-        st.subheader("💰 总计")
-        sc1, sc2, sc3, sc4 = st.columns(4)
-        sc1.metric("票面金额合计", f"¥{summary.get('票面金额', 0):.2f}")
-        sc2.metric("基础补助合计", f"¥{summary.get('基础补助', 0):.2f}")
-        sc3.metric("额外补助合计", f"¥{summary.get('额外补助', 0):.2f}")
-        sc4.metric("总金额合计", f"¥{summary.get('总金额', 0):.2f}")
+    st.subheader("💰 总计")
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("票面金额合计", f"¥{result['total_fare']:.2f}")
+    sc2.metric("基础补助合计", f"¥{result['total_base']:.2f}")
+    sc3.metric("额外补助合计", f"¥{result['total_extra']:.2f}")
+    sc4.metric("总金额合计", f"¥{result['total_all']:.2f}")
 
     # Rename mapping + download
     st.header("📁 文件改名")
     if rename_map:
         rename_table = []
         for orig, new in rename_map.items():
-            if orig in file_map:
-                rename_table.append({"原文件名": orig, "新文件名": new})
+            rename_table.append({"原文件名": orig, "新文件名": new})
 
         if rename_table:
             st.dataframe(rename_table, use_container_width=True, hide_index=True)
 
-            # Create ZIP with renamed files
             zip_bytes = create_renamed_zip(file_map, rename_map)
             st.download_button(
                 label="📦 下载改名后的文件（ZIP）",
@@ -278,11 +345,11 @@ def main():
                 type="primary"
             )
 
-    # Show raw API response (expandable)
+    # Raw API response
     with st.expander("查看API原始返回"):
         st.code(raw_response[:3000])
 
-    # Show extracted PDF text (expandable)
+    # Extracted text
     with st.expander("查看PDF提取的原始文本"):
         st.text(combined_text[:5000])
 
