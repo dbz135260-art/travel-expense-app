@@ -17,90 +17,54 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 # ─── OFD Parser ────────────────────────────────────────
 
 def parse_ofd(file_bytes: bytes) -> Dict:
-    """Parse OFD (数电票) file - extract structured data from attachment XML"""
     import zipfile
     result = {"姓名": "", "金额": 0.0, "日期": "", "保险费": 0.0, "类型": "ofd", "原始文本": ""}
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-            # Find XML files
             xml_files = [n for n in z.namelist() if n.endswith(".xml") and "Attachs" in n]
-            for xml_path in xml_files:
-                with z.open(xml_path) as f:
-                    raw = f.read()
-                    content = raw.decode("utf-8", errors="replace")
-                    result["原始文本"] += content + "\n"
-
-            # Also check Document.xml for any text
             doc_xmls = [n for n in z.namelist() if n.endswith("Document.xml")]
-            for xml_path in doc_xmls:
+
+            for xml_path in xml_files + doc_xmls:
                 with z.open(xml_path) as f:
                     raw = f.read()
                     result["原始文本"] += raw.decode("utf-8", errors="replace") + "\n"
 
-            # Parse XBRL data from attachment XMLs
             for xml_path in xml_files:
                 with z.open(xml_path) as f:
                     raw = f.read()
                     try:
                         root = ET.fromstring(raw)
-                        # Namespace handling
                         ns = {}
                         for m in re.finditer(r'xmlns:(\w+)="([^"]+)"', raw.decode("utf-8", errors="replace")):
                             ns[m.group(1)] = m.group(2)
 
-                        # Extract passenger name
-                        for tag in ["atr:PassengerName", "PassengerName"]:
-                            el = root.find(f".//{tag}", ns) if tag in ns.get("atr", "") or ":" not in tag else root.find(f".//{tag}")
-                            if el is not None and el.text:
+                        # Passenger name
+                        for el in root.iter():
+                            if "PassengerName" in el.tag and el.text:
                                 result["姓名"] = el.text.strip()
                                 break
 
-                        # Try to find name in non-namespace way
-                        if not result["姓名"]:
-                            for el in root.iter():
-                                if "PassengerName" in el.tag and el.text:
-                                    result["姓名"] = el.text.strip()
-                                    break
-
-                        # Extract total amount
-                        for tag in ["atr:TotalAmount", "TotalAmount"]:
-                            el = root.find(f".//{tag}", ns) if tag in ns.get("atr", "") or ":" not in tag else root.find(f".//{tag}")
-                            if el is not None and el.text:
-                                result["金额"] = float(el.text)
+                        # Total amount
+                        for el in root.iter():
+                            if "TotalAmount" in el.tag and el.text:
+                                try: result["金额"] = float(el.text)
+                                except: pass
                                 break
-                        if result["金额"] == 0:
-                            for el in root.iter():
-                                if "TotalAmount" in el.tag and el.text:
-                                    try:
-                                        result["金额"] = float(el.text)
-                                    except: pass
-                                    break
 
-                        # Extract insurance (if present)
-                        for tag in ["atr:InsuranceFee", "InsuranceFee",
-                                     "atr:OtherTaxes", "OtherTaxes"]:
-                            el = root.find(f".//{tag}", ns) if tag in ns.get("atr", "") or ":" not in tag else root.find(f".//{tag}")
-                            if el is not None and el.text:
-                                try:
-                                    val = float(el.text)
-                                    # Check if it's labeled as insurance or other
-                                    if "Insurance" in tag or "保险" in str(raw):
-                                        result["保险费"] = val
+                        # Insurance / other taxes
+                        for el in root.iter():
+                            if "OtherTaxes" in el.tag and el.text:
+                                try: result["保险费"] = float(el.text)
                                 except: pass
 
-                        # Extract date
-                        for tag in ["atr:CarrierDate", "CarrierDate",
-                                     "atr:IssuanceDate", "IssuanceDate"]:
-                            el = root.find(f".//{tag}", ns) if tag in ns.get("atr", "") or ":" not in tag else root.find(f".//{tag}")
-                            if el is not None and el.text:
+                        # Date
+                        for el in root.iter():
+                            if "CarrierDate" in el.tag and el.text:
                                 result["日期"] = el.text.strip()
                                 break
-                        if not result["日期"]:
-                            for el in root.iter():
-                                if "CarrierDate" in el.tag and el.text:
+                            if "IssuanceDate" in el.tag and el.text:
+                                if not result["日期"]:
                                     result["日期"] = el.text.strip()
-                                    break
-
                     except ET.ParseError:
                         continue
     except Exception as e:
@@ -109,7 +73,6 @@ def parse_ofd(file_bytes: bytes) -> Dict:
 
 
 def extract_pdf_text(file_bytes: bytes) -> str:
-    """Extract text from PDF using PyMuPDF"""
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         text_parts = []
@@ -158,58 +121,160 @@ def create_renamed_zip(file_map: Dict[str, bytes], rename_map: Dict[str, str]) -
     return buf.getvalue()
 
 
-def extract_name_from_filename(fname: str) -> str:
-    """Extract teacher name from filename. Try patterns like 姓名_xxx, xxx-姓名, etc."""
-    # Strip extension
-    name = Path(fname).stem
-    # Common patterns in Chinese filenames with names
-    # If filename starts with Chinese name (2-4 chars)
-    # Try to find a known pattern
-    return name
+# ─── Smart teacher info parser ──────────────────────
+# Auto-detect field types by pattern, regardless of order.
 
+PAT_NAME = re.compile(r'^[一-鿿]{2,4}$')
+PAT_ID   = re.compile(r'^\d{17}[\dXx]$')
+PAT_CARD = re.compile(r'^\d{15,19}$')
+PAT_PHONE = re.compile(r'^1\d{10}$')
+PAT_DATE_OR_NUM = re.compile(r'^\d+(\.\d+)?$')
 
-# ─── Parse pasted teacher info ──────────────────────
+def classify_field(val: str) -> str:
+    """Classify a single field value by its format"""
+    if PAT_NAME.match(val):
+        return "姓名"
+    if PAT_ID.match(val):
+        return "身份证号"
+    if PAT_PHONE.match(val):
+        return "手机号"
+    if PAT_CARD.match(val):
+        return "银行卡号"
+    if PAT_DATE_OR_NUM.match(val):
+        return "数字"
+    return "其他"
+
 
 def parse_teacher_info(text: str) -> List[Dict]:
-    """Parse pasted teacher info (name + bank card or more fields).
-    Accepts: tab-separated, space-separated, table format, etc."""
+    """Parse pasted teacher info, auto-detect fields by pattern regardless of column order"""
     lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
     teachers = []
 
     for line in lines:
-        # Try tab separation first
-        parts = re.split(r"[\t,，、\s]{1,}", line)
+        parts = re.split(r"[\t,，、；;|\s]{1,}", line)
         parts = [p.strip() for p in parts if p.strip()]
-        if len(parts) >= 2:
-            # First part should be name (Chinese chars), second should be bank card (digits)
-            name = parts[0]
-            # Find the first all-digit field (bank card)
-            card = ""
-            phone = ""
-            id_num = ""
-            for p in parts[1:]:
-                if re.match(r"^\d{15,}$", p):  # bank card (15+ digits)
-                    card = p
-                elif re.match(r"^\d{11}$", p):  # phone
-                    phone = p
-                elif re.match(r"^\d{17}[\dXx]$", p):  # ID
-                    id_num = p
-                elif re.match(r"^\d{18}$", p):
-                    id_num = p
+        if len(parts) < 2:
+            continue
 
-            teacher = {"姓名": name, "银行卡号": card, "手机号": phone, "身份证号": id_num}
-            if card:  # Only add if we found a bank card
+        teacher = {}
+        num_values = []
+        for p in parts:
+            ftype = classify_field(p)
+            if ftype == "姓名":
+                if "姓名" not in teacher:
+                    teacher["姓名"] = p
+            elif ftype == "身份证号":
+                teacher["身份证号"] = p
+            elif ftype == "手机号":
+                teacher["手机号"] = p
+            elif ftype == "银行卡号":
+                teacher["银行卡号"] = p
+            elif ftype == "数字":
+                num_values.append(p)
+
+        if "姓名" in teacher:
+            teacher.setdefault("身份证号", "")
+            teacher.setdefault("手机号", "")
+            teacher.setdefault("银行卡号", "")
+            teacher.setdefault("标准", 0)
+            teacher.setdefault("学时", 0)
+
+            # If there were extra numbers and we have 标准/学时 fields, use them
+            if num_values and "标准" in teacher:
+                nums = [float(x) for x in num_values]
+                if len(nums) >= 1:
+                    teacher["标准"] = nums[0]
+                if len(nums) >= 2:
+                    teacher["学时"] = nums[1]
+
+            teachers.append(teacher)
+        else:
+            # No clear name found — try first field as name if it looks plausible
+            first = parts[0]
+            # Check if first non-numeric, non-phone field could be name
+            if not PAT_PHONE.match(first) and not PAT_ID.match(first) and not PAT_CARD.match(first):
+                teacher["姓名"] = first
+                # Re-classify remaining
+                for p in parts[1:]:
+                    ftype = classify_field(p)
+                    if ftype == "身份证号":
+                        teacher["身份证号"] = p
+                    elif ftype == "手机号":
+                        teacher["手机号"] = p
+                    elif ftype == "银行卡号":
+                        teacher["银行卡号"] = p
+                    elif ftype == "数字":
+                        if not teacher.get("标准"):
+                            teacher["标准"] = float(p)
+                        else:
+                            teacher["学时"] = float(p)
+                teacher.setdefault("身份证号", "")
+                teacher.setdefault("手机号", "")
+                teacher.setdefault("银行卡号", "")
                 teachers.append(teacher)
+
+    return teachers
+
+
+def parse_teacher_info_basic(text: str) -> List[Dict]:
+    """Parse teacher info for travel module (name + bank card, no 标准/学时)"""
+    teachers = parse_teacher_info(text)
+    # Strip labor-specific fields
+    for t in teachers:
+        t.pop("标准", None)
+        t.pop("学时", None)
+    return teachers
+
+
+# ─── Teacher database from Excel ──────────────────────
+
+def load_teacher_db_from_excel(file_bytes: bytes) -> List[Dict]:
+    """Load teacher database from an Excel file. Expected columns: 姓名, 身份证号, 银行卡号, 手机号"""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    ws = wb.active
+
+    # Read header row
+    headers = []
+    for cell in ws[1]:
+        if cell.value:
+            headers.append(str(cell.value).strip())
+        else:
+            headers.append("")
+
+    # Map columns
+    col_map = {}
+    for i, h in enumerate(headers):
+        for key in ["姓名", "身份证号", "银行卡号", "手机号"]:
+            if key in h:
+                col_map[key] = i
+                break
+
+    teachers = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not any(row):
+            continue
+        teacher = {}
+        for key, idx in col_map.items():
+            val = row[idx]
+            if val is not None and key in ["银行卡号", "身份证号", "手机号"]:
+                teacher[key] = str(int(val)) if isinstance(val, (int, float)) else str(val).strip()
+            elif val is not None:
+                teacher[key] = str(val).strip()
+            else:
+                teacher[key] = ""
+        if "姓名" in teacher and teacher["姓名"]:
+            teachers.append(teacher)
 
     return teachers
 
 
 # ─── Excel generators ──────────────────────────────
 
-def generate_travel_excel(teachers: List[Dict], project_name: str, project_code: str) -> bytes:
-    """Generate 差旅费 Excel matching template format"""
+def generate_travel_excel(teachers: List[Dict], project_name: str) -> bytes:
     import openpyxl
     from openpyxl.styles import Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -217,87 +282,73 @@ def generate_travel_excel(teachers: List[Dict], project_name: str, project_code:
 
     thin_border = Border(
         left=Side(style='thin'), right=Side(style='thin'),
-        top=Side(style='thin'), bottom=Side(style='thin')
-    )
+        top=Side(style='thin'), bottom=Side(style='thin'))
     center = Alignment(horizontal='center', vertical='center')
     left_align = Alignment(horizontal='left', vertical='center')
     title_font = Font(name='宋体', bold=True, size=14)
     header_font = Font(name='宋体', bold=True, size=11)
     normal_font = Font(name='宋体', size=11)
 
-    # Row 1: Title
-    ws.merge_cells('A1:D1')
-    ws['A1'] = f"差旅费发放表"
+    max_details = max((len(t.get("明细金额", [])) for t in teachers), default=0)
+    total_cols = 4 + max_details
+
+    ws.merge_cells(f'A1:{get_column_letter(total_cols)}1')
+    ws['A1'] = "差旅费发放表"
     ws['A1'].font = title_font
     ws['A1'].alignment = center
 
-    # Row 2: Project name
-    ws.merge_cells('A2:D2')
+    ws.merge_cells(f'A2:{get_column_letter(total_cols)}2')
     ws['A2'] = f"项目名称：{project_name}"
     ws['A2'].font = Font(name='宋体', bold=True, size=11)
     ws['A2'].alignment = left_align
 
-    # Row 3: Headers
     headers = ["序号", "姓名", "银行借记卡号", "实发金额"]
+    for col_idx in range(max_details):
+        headers.append(f"票面{col_idx+1}")
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=3, column=col, value=h)
         cell.font = header_font
         cell.alignment = center
         cell.border = thin_border
 
-    # Data rows
     total_amount = 0
     for i, t in enumerate(teachers, 1):
-        ws.cell(row=3+i, column=1, value=i).font = normal_font
-        ws.cell(row=3+i, column=1).alignment = center
-        ws.cell(row=3+i, column=1).border = thin_border
+        row_num = 3 + i
+        ws.cell(row=row_num, column=1, value=i).font = normal_font
+        ws.cell(row=row_num, column=1).alignment = center
+        ws.cell(row=row_num, column=1).border = thin_border
 
-        ws.cell(row=3+i, column=2, value=t.get("姓名", "")).font = normal_font
-        ws.cell(row=3+i, column=2).alignment = center
-        ws.cell(row=3+i, column=2).border = thin_border
+        ws.cell(row=row_num, column=2, value=t.get("姓名", "")).font = normal_font
+        ws.cell(row=row_num, column=2).alignment = center
+        ws.cell(row=row_num, column=2).border = thin_border
 
-        ws.cell(row=3+i, column=3, value=t.get("银行卡号", "")).font = normal_font
-        ws.cell(row=3+i, column=3).alignment = center
-        ws.cell(row=3+i, column=3).border = thin_border
+        ws.cell(row=row_num, column=3, value=t.get("银行卡号", "")).font = normal_font
+        ws.cell(row=row_num, column=3).alignment = center
+        ws.cell(row=row_num, column=3).border = thin_border
 
         amt = float(t.get("实发金额", 0))
-        ws.cell(row=3+i, column=4, value=amt).font = normal_font
-        ws.cell(row=3+i, column=4).alignment = center
-        ws.cell(row=3+i, column=4).border = thin_border
-        ws.cell(row=3+i, column=4).number_format = '#,##0.00'
+        ws.cell(row=row_num, column=4, value=amt).font = normal_font
+        ws.cell(row=row_num, column=4).alignment = center
+        ws.cell(row=row_num, column=4).border = thin_border
+        ws.cell(row=row_num, column=4).number_format = '#,##0.00'
         total_amount += amt
 
-    # Add detailed amounts columns after 实发金额 (column 4)
-    # Check how many detail columns we need
-    max_details = max((len(t.get("明细金额", [])) for t in teachers), default=0)
-    if max_details > 0:
-        for col_idx in range(max_details):
-            col_letter = openpyxl.utils.get_column_letter(5 + col_idx)
-            ws.cell(row=3, column=5+col_idx, value=f"票面{col_idx+1}").font = header_font
-            ws.cell(row=3, column=5+col_idx).alignment = center
-            ws.cell(row=3, column=5+col_idx).border = thin_border
+        # Detail amounts
+        details = t.get("明细金额", [])
+        for j, d_amt in enumerate(details):
+            cell = ws.cell(row=row_num, column=5+j, value=float(d_amt))
+            cell.font = normal_font
+            cell.alignment = center
+            cell.border = thin_border
+            cell.number_format = '#,##0.00'
 
-        # Re-merge title to cover all columns
-        ws.merge_cells(f'A1:{openpyxl.utils.get_column_letter(4+max_details)}1')
-        ws.merge_cells(f'A2:{openpyxl.utils.get_column_letter(4+max_details)}2')
-
-        # Fill detail amounts per row
-        for i, t in enumerate(teachers, 1):
-            details = t.get("明细金额", [])
-            for j, amt in enumerate(details):
-                cell = ws.cell(row=3+i, column=5+j, value=float(amt))
-                cell.font = normal_font
-                cell.alignment = center
-                cell.border = thin_border
-                cell.number_format = '#,##0.00'
-
-    # Summary row
+    # Summary
     summary_row = 4 + len(teachers)
     ws.merge_cells(f'A{summary_row}:C{summary_row}')
     ws.cell(row=summary_row, column=1, value="合    计").font = Font(name='宋体', bold=True, size=11)
     ws.cell(row=summary_row, column=1).alignment = center
     ws.cell(row=summary_row, column=1).border = thin_border
-    for c in range(2, 5):
+    for c in range(2, total_cols + 1):
         ws.cell(row=summary_row, column=c).border = thin_border
     total_cell = ws.cell(row=summary_row, column=4, value=total_amount)
     total_cell.font = Font(name='宋体', bold=True, size=11)
@@ -305,13 +356,12 @@ def generate_travel_excel(teachers: List[Dict], project_name: str, project_code:
     total_cell.number_format = '#,##0.00'
     total_cell.border = thin_border
 
-    # Column widths
     ws.column_dimensions['A'].width = 8
     ws.column_dimensions['B'].width = 12
     ws.column_dimensions['C'].width = 24
     ws.column_dimensions['D'].width = 14
     for col_idx in range(max_details):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(5+col_idx)].width = 12
+        ws.column_dimensions[get_column_letter(5+col_idx)].width = 12
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -320,7 +370,6 @@ def generate_travel_excel(teachers: List[Dict], project_name: str, project_code:
 
 
 def generate_labor_excel(teachers: List[Dict], project_name: str, project_code: str) -> bytes:
-    """Generate 劳务费 Excel matching template format"""
     import openpyxl
     from openpyxl.styles import Font, Alignment, Border, Side
 
@@ -330,21 +379,18 @@ def generate_labor_excel(teachers: List[Dict], project_name: str, project_code: 
 
     thin_border = Border(
         left=Side(style='thin'), right=Side(style='thin'),
-        top=Side(style='thin'), bottom=Side(style='thin')
-    )
+        top=Side(style='thin'), bottom=Side(style='thin'))
     center = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left_align = Alignment(horizontal='left', vertical='center')
     title_font = Font(name='宋体', bold=True, size=14)
     header_font = Font(name='宋体', bold=True, size=10)
     normal_font = Font(name='宋体', size=10)
 
-    # Row 1: Title
     ws.merge_cells('A1:J1')
-    ws['A1'] = f"劳务费发放表"
+    ws['A1'] = "劳务费发放表"
     ws['A1'].font = title_font
     ws['A1'].alignment = center
 
-    # Row 2: Project name and code
     ws.merge_cells('A2:G2')
     ws['A2'] = f"项目名称：{project_name}"
     ws['A2'].font = Font(name='宋体', bold=True, size=10)
@@ -354,7 +400,6 @@ def generate_labor_excel(teachers: List[Dict], project_name: str, project_code: 
     ws['H2'].font = Font(name='宋体', bold=True, size=10)
     ws['H2'].alignment = left_align
 
-    # Row 3: Headers
     headers = ["序号", "项目执行时间", "工作内容", "手机号", "姓名", "身份证号", "银行卡号", "标准(元/学时)", "学时", "实发金额"]
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=3, column=col, value=h)
@@ -362,57 +407,34 @@ def generate_labor_excel(teachers: List[Dict], project_name: str, project_code: 
         cell.alignment = center
         cell.border = thin_border
 
-    # Data rows
     total_amount = 0
     for i, t in enumerate(teachers, 1):
         row_num = 3 + i
-        ws.cell(row=row_num, column=1, value=i).font = normal_font
-        ws.cell(row=row_num, column=1).alignment = center
-        ws.cell(row=row_num, column=1).border = thin_border
-
-        ws.cell(row=row_num, column=2, value=t.get("执行时间", "")).font = normal_font
-        ws.cell(row=row_num, column=2).alignment = center
-        ws.cell(row=row_num, column=2).border = thin_border
-
-        ws.cell(row=row_num, column=3, value=t.get("工作内容", "讲课")).font = normal_font
-        ws.cell(row=row_num, column=3).alignment = center
-        ws.cell(row=row_num, column=3).border = thin_border
-
-        ws.cell(row=row_num, column=4, value=t.get("手机号", "")).font = normal_font
-        ws.cell(row=row_num, column=4).alignment = center
-        ws.cell(row=row_num, column=4).border = thin_border
-
-        ws.cell(row=row_num, column=5, value=t.get("姓名", "")).font = normal_font
-        ws.cell(row=row_num, column=5).alignment = center
-        ws.cell(row=row_num, column=5).border = thin_border
-
-        ws.cell(row=row_num, column=6, value=t.get("身份证号", "")).font = normal_font
-        ws.cell(row=row_num, column=6).alignment = center
-        ws.cell(row=row_num, column=6).border = thin_border
-
-        ws.cell(row=row_num, column=7, value=t.get("银行卡号", "")).font = normal_font
-        ws.cell(row=row_num, column=7).alignment = center
-        ws.cell(row=row_num, column=7).border = thin_border
-
+        vals = [
+            i,
+            t.get("执行时间", ""),
+            t.get("工作内容", "讲课"),
+            t.get("手机号", ""),
+            t.get("姓名", ""),
+            t.get("身份证号", ""),
+            t.get("银行卡号", ""),
+            float(t.get("标准", 0)),
+            float(t.get("学时", 0)),
+        ]
         rate = float(t.get("标准", 0))
         hours = float(t.get("学时", 0))
-        ws.cell(row=row_num, column=8, value=rate).font = normal_font
-        ws.cell(row=row_num, column=8).alignment = center
-        ws.cell(row=row_num, column=8).border = thin_border
-        ws.cell(row=row_num, column=8).number_format = '#,##0.00'
-
-        ws.cell(row=row_num, column=9, value=hours).font = normal_font
-        ws.cell(row=row_num, column=9).alignment = center
-        ws.cell(row=row_num, column=9).border = thin_border
-
         amt = rate * hours
-        ws.cell(row=row_num, column=10, value=amt).font = normal_font
-        ws.cell(row=row_num, column=10).alignment = center
-        ws.cell(row=row_num, column=10).border = thin_border
-        ws.cell(row=row_num, column=10).number_format = '#,##0.00'
+        vals.append(amt)
+
+        for col, val in enumerate(vals, 1):
+            cell = ws.cell(row=row_num, column=col, value=val)
+            cell.font = normal_font
+            cell.alignment = center
+            cell.border = thin_border
+            if col in (8, 10):
+                cell.number_format = '#,##0.00'
         total_amount += amt
 
-    # Summary row
     summary_row = 4 + len(teachers)
     ws.merge_cells(f'A{summary_row}:G{summary_row}')
     ws.cell(row=summary_row, column=1, value="合    计").font = Font(name='宋体', bold=True, size=10)
@@ -420,21 +442,18 @@ def generate_labor_excel(teachers: List[Dict], project_name: str, project_code: 
     ws.cell(row=summary_row, column=1).border = thin_border
     for c in range(2, 8):
         ws.cell(row=summary_row, column=c).border = thin_border
-
     total_cell = ws.cell(row=summary_row, column=10, value=total_amount)
     total_cell.font = Font(name='宋体', bold=True, size=10)
     total_cell.alignment = center
     total_cell.number_format = '#,##0.00'
     total_cell.border = thin_border
 
-    # Signature row
     sig_row = summary_row + 1
     ws.merge_cells(f'A{sig_row}:J{sig_row}')
-    ws.cell(row=sig_row, column=1, value="  项目负责人：                           财务负责人：                                      组长：                                  ").font = Font(name='宋体', bold=True, size=10)
+    ws.cell(row=sig_row, column=1,
+            value="  项目负责人：                           财务负责人：                                      组长：                                  ").font = Font(name='宋体', bold=True, size=10)
 
-    # Column widths
-    widths = [6, 16, 10, 14, 10, 20, 24, 14, 8, 12]
-    for i, w in enumerate(widths, 1):
+    for i, w in enumerate([6, 16, 10, 14, 10, 20, 24, 14, 8, 12], 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
     buf = io.BytesIO()
@@ -473,48 +492,89 @@ TRAVEL_EXTRACT_PROMPT = """你是一个票据处理助手。从上传的文件�
 
 def main():
     st.title("🧾 差旅/劳务费处理系统")
-    st.markdown("三个模块：差旅补助计算 / 老师差旅报销 / 老师劳务费发放")
 
-    # Sidebar config
+    # Sidebar
     with st.sidebar:
         st.header("配置")
         default_key = st.secrets.get("DEEPSEEK_API_KEY", "")
-        api_key = st.text_input("DeepSeek API Key", type="password", value=default_key,
-                                help="已配置自动填入，可覆盖")
+        api_key = st.text_input("DeepSeek API Key", type="password", value=default_key)
         project_name = st.text_input("项目名称", value="2025-N4-PX16")
-        project_code = st.text_input("项目号", value="2025-N4-PX16",
-                                     help="劳务费模板的项目号")
+        project_code = st.text_input("项目号", value="2025-N4-PX16")
 
-    if not api_key:
+    if not api_key and "DEEPSEEK_API_KEY" not in st.secrets:
         st.warning("请在左侧输入 DeepSeek API Key")
         st.stop()
 
+    # ─── Teacher Database (session-wide) ──────────────
+    if "teacher_db" not in st.session_state:
+        st.session_state.teacher_db = []
+
+    with st.expander("📚 老师信息库", expanded=not bool(st.session_state.teacher_db)):
+        col1, col2 = st.columns([3, 2])
+        with col1:
+            db_file = st.file_uploader("上传老师信息Excel（姓名/身份证号/银行卡号/手机号）",
+                                       type=["xlsx", "xls"], key="db_upload")
+        with col2:
+            st.markdown("或粘贴更新：")
+            db_text = st.text_area("每行一位老师，自动识别字段", height=80,
+                                   placeholder="刘延川 6222620910068634421 222325197012140317 13911080938",
+                                   key="db_text", label_visibility="collapsed")
+
+        if db_file is not None:
+            loaded = load_teacher_db_from_excel(db_file.read())
+            if loaded:
+                # Merge: update existing, add new
+                existing_names = {t["姓名"] for t in st.session_state.teacher_db}
+                for t in loaded:
+                    if t["姓名"] in existing_names:
+                        # Update existing
+                        for i, et in enumerate(st.session_state.teacher_db):
+                            if et["姓名"] == t["姓名"]:
+                                st.session_state.teacher_db[i] = t
+                                break
+                    else:
+                        st.session_state.teacher_db.append(t)
+                st.success(f"已更新/合并 {len(loaded)} 位老师")
+
+        if db_text.strip():
+            parsed = parse_teacher_info(db_text.strip())
+            existing_names = {t["姓名"] for t in st.session_state.teacher_db}
+            for t in parsed:
+                if t["姓名"] in existing_names:
+                    for i, et in enumerate(st.session_state.teacher_db):
+                        if et["姓名"] == t["姓名"]:
+                            st.session_state.teacher_db[i] = t
+                            break
+                else:
+                    st.session_state.teacher_db.append(t)
+            if parsed:
+                st.success(f"已更新/新增 {len(parsed)} 位老师")
+
+        if st.session_state.teacher_db:
+            st.dataframe(st.session_state.teacher_db, use_container_width=True, hide_index=True)
+            st.caption(f"共 {len(st.session_state.teacher_db)} 位老师")
+            if st.button("清空信息库", key="clear_db"):
+                st.session_state.teacher_db = []
+                st.rerun()
+
     tab1, tab2, tab3 = st.tabs(["💰 差旅补助计算", "✈️ 老师差旅报销", "👨‍🏫 老师劳务费发放"])
 
-    # ─── TAB 1: 差旅补助计算（原功能）────────────────
     with tab1:
         render_tab_subsidy(api_key, project_name)
-
-    # ─── TAB 2: 老师差旅报销 ────────────────────
     with tab2:
         render_tab_travel(api_key, project_name, project_code)
-
-    # ─── TAB 3: 老师劳务费发放 ────────────────────
     with tab3:
         render_tab_labor(project_name, project_code)
 
 
 def render_tab_subsidy(api_key, project_name):
-    """原差旅补助计算功能"""
+    """原差旅补助计算——名字直接用，不加前缀"""
     st.subheader("差旅补助计算")
 
-    uploaded_files = st.file_uploader("上传PDF行程单", type=["pdf"], accept_multiple_files=True,
-                                      key="subsidy_files")
-
+    uploaded_files = st.file_uploader("上传PDF行程单", type=["pdf"], accept_multiple_files=True, key="subsidy_files")
     if not uploaded_files:
         st.info("请上传PDF文件")
         return
-
     st.success(f"已上传 {len(uploaded_files)} 个文件")
 
     if not st.button("🚀 开始计算", type="primary", key="subsidy_btn"):
@@ -533,20 +593,16 @@ def render_tab_subsidy(api_key, project_name):
         progress_bar.progress((i + 1) / (len(uploaded_files) + 2))
 
     combined_text = "\n\n---\n\n".join(pdf_texts)
-
     status_text.text("调用 DeepSeek API...")
     progress_bar.progress(0.6)
 
-    # LLM extracts raw data
-    sys_prompt = """你是一个差旅单据处理助手。从上传的PDF行程单中提取信息，不要计算。
-
-对每个文件提取以下字段：
+    sys_prompt = """从PDF行程单中提取信息，不要计算。
+对每个文件提取：
 1. 姓名 - 旅客姓名
 2. 日期 - 出发日期（YYYY-MM-DD）
 3. 票面金额 - 合计金额（数字，元）
 4. 类型 - "出发"或"返程"或"中转"
 5. 文件名 - 原文件名
-
 输出纯JSON数组。"""
     user_prompt = f"项目名称：{project_name}\n\n文件内容：\n{combined_text}"
 
@@ -557,33 +613,27 @@ def render_tab_subsidy(api_key, project_name):
         return
 
     progress_bar.progress(0.8)
-
     try:
         data = parse_json_response(raw)
     except Exception as e:
-        st.error(f"解析结果失败: {e}")
+        st.error(f"解析失败: {e}")
         st.code(raw[:2000])
         return
 
-    # Python calculates
+    # Python calculation
     persons = {}
     for item in data:
         name = item.get("姓名", "未知")
-        if name not in persons:
-            persons[name] = []
-        persons[name].append(item)
+        persons.setdefault(name, []).append(item)
 
     results = []
-    total_fare = 0
-    total_base = 0
-    total_extra = 0
-    total_all = 0
+    total_fare = total_base = total_extra = total_all = 0
     rename_map = {}
 
     for person_name, tickets in persons.items():
         tickets.sort(key=lambda x: x.get("日期", ""))
         dates = []
-        d_count, r_count, t_count = 0, 0, 0
+        d_count = r_count = t_count = 0
         for tk in tickets:
             try:
                 dates.append(datetime.strptime(str(tk.get("日期", "")), "%Y-%m-%d").date())
@@ -593,7 +643,6 @@ def render_tab_subsidy(api_key, project_name):
             if tp == "出发": d_count += 1
             elif tp == "返程": r_count += 1
             else: t_count += 1
-
         if not dates:
             continue
         travel_days = (max(dates) - min(dates)).days + 1
@@ -626,7 +675,6 @@ def render_tab_subsidy(api_key, project_name):
     progress_bar.progress(1.0)
     status_text.text("✅ 完成")
 
-    # Display
     st.subheader("明细")
     st.dataframe([{
         "姓名": r["姓名"], "日期": r["日期"], "票面金额": r["票面金额"],
@@ -651,61 +699,49 @@ def render_tab_subsidy(api_key, project_name):
 
 
 def render_tab_travel(api_key, project_name, project_code):
-    """老师差旅报销模块"""
+    """老师差旅报销——Excel姓名写老师原名，文件改名加'段'前缀"""
     st.subheader("老师差旅报销")
-
     st.markdown("""
-    **规则说明：**
-    - 实发金额 = 行程单/发票票面总金额
-    - 飞机行程单含保险费 → 保险费+票面金额
+    - 实发金额 = 票面金额合计，含保险费则相加
     - 普通发票从文件名提取姓名
+    - **改名格式：`段 {姓名} {日期} {金额}.pdf`**
     """)
 
-    # Step 1: Upload files
-    uploaded_files = st.file_uploader(
-        "上传PDF/OFD文件（文件名需含老师姓名）",
-        type=["pdf", "ofd"],
-        accept_multiple_files=True,
-        key="travel_files"
-    )
-
+    uploaded_files = st.file_uploader("上传PDF/OFD文件", type=["pdf", "ofd"],
+                                      accept_multiple_files=True, key="travel_files")
     if not uploaded_files:
         st.info("请上传文件")
         return
-
     st.success(f"已上传 {len(uploaded_files)} 个文件")
 
-    # Step 2: Paste bank info
+    # Bank info — use teacher DB or paste
     st.markdown("---")
-    st.markdown("**老师银行卡信息** — 粘贴表格或文本（姓名 + 银行卡号）")
-    bank_text = st.text_area(
-        "支持格式：姓名 银行卡号（每行一位老师）",
-        placeholder="例：\n刘延川 6222620910068634421\n张伟 9558800200125094454\n王芳 6222620140009990696\n谢维娜 6229478520291044195",
-        height=150, key="travel_bank"
-    )
+    st.markdown("**老师银行卡信息**")
+    use_db = st.checkbox("从老师信息库自动匹配", value=bool(st.session_state.teacher_db))
 
     teachers = []
-    if bank_text.strip():
-        teachers = parse_teacher_info(bank_text.strip())
-        if teachers:
-            st.success(f"识别到 {len(teachers)} 位老师")
-            st.dataframe(teachers, use_container_width=True, hide_index=True)
+    if use_db and st.session_state.teacher_db:
+        teachers = st.session_state.teacher_db.copy()
+        st.success(f"已加载信息库 {len(teachers)} 位老师")
+    else:
+        bank_text = st.text_area("粘贴（姓名+银行卡号，每行一位）",
+                                 placeholder="刘延川 6222620910068634421",
+                                 height=100, key="travel_bank")
+        if bank_text.strip():
+            teachers = parse_teacher_info(bank_text.strip())
 
-    if not st.button("🚀 处理并生成Excel", type="primary", key="travel_btn"):
+    if not st.button("🚀 处理并生成", type="primary", key="travel_btn"):
         return
-
     if not teachers:
-        st.warning("请输入老师银行卡信息")
+        st.warning("请先输入老师信息")
         return
 
-    # Process files
     progress_bar = st.progress(0, text="解析文件中...")
     status_text = st.empty()
 
     file_data = []
     file_map = {}
     pdf_texts = []
-    ofd_data = []
 
     for i, f in enumerate(uploaded_files):
         bytes_data = f.read()
@@ -713,37 +749,28 @@ def render_tab_travel(api_key, project_name, project_code):
         ext = Path(f.name).suffix.lower()
 
         if ext == ".ofd":
-            # Parse OFD directly
             parsed = parse_ofd(bytes_data)
-            parsed["文件名"] = f.name
-            ofd_data.append(parsed)
             file_data.append({
-                "文件名": f.name,
-                "姓名": parsed.get("姓名", ""),
-                "金额": parsed.get("金额", 0),
-                "保险费": parsed.get("保险费", 0),
-                "日期": parsed.get("日期", ""),
-                "类型": "ofd",
+                "文件名": f.name, "姓名": parsed.get("姓名", ""),
+                "金额": parsed.get("金额", 0), "保险费": parsed.get("保险费", 0),
+                "日期": parsed.get("日期", ""), "类型": "ofd",
                 "原始文本": parsed.get("原始文本", "")
             })
-            status_text.text(f"OFD解析完成: {f.name}")
         else:
             text = extract_pdf_text(bytes_data)
             pdf_texts.append(f"【文件{i+1}: {f.name}】\n{text}")
             file_data.append({"文件名": f.name, "类型": "pdf", "原始文本": text})
-
         progress_bar.progress((i + 1) / (len(uploaded_files) + 2))
 
-    # Call LLM for PDFs that need extraction
+    # LLM for PDFs
     if pdf_texts:
         status_text.text("调用DeepSeek解析PDF...")
         progress_bar.progress(0.6)
         combined = "\n\n---\n\n".join(pdf_texts)
-        user_prompt = f"项目名称：{project_name}\n\n文件内容：\n{combined}"
         try:
-            llm_raw = call_deepseek(api_key, TRAVEL_EXTRACT_PROMPT, user_prompt, max_tokens=4096)
+            llm_raw = call_deepseek(api_key, TRAVEL_EXTRACT_PROMPT,
+                                    f"项目名称：{project_name}\n\n文件内容：\n{combined}")
             llm_data = parse_json_response(llm_raw)
-            # Merge LLM results
             for item in llm_data:
                 for fd in file_data:
                     if fd["文件名"] == item.get("文件名", "") and fd["类型"] == "pdf":
@@ -754,195 +781,188 @@ def render_tab_travel(api_key, project_name, project_code):
                         fd["文件类型"] = item.get("文件类型", "普通发票")
                         break
         except Exception as e:
-            st.warning(f"LLM解析部分失败: {e}，将使用文件名提取姓名")
+            st.warning(f"LLM解析部分失败: {e}，从文件名提取")
 
-    # Extract names from filenames for entries without names
+    # Fallback: extract names from filenames
     for fd in file_data:
         if not fd.get("姓名"):
-            name = Path(fd["文件名"]).stem
-            # Try to extract Chinese name (2-4 chars) from filename
-            cn_names = re.findall(r'[一-鿿]{2,4}', name)
-            if cn_names:
-                # Use the last occurrence which is less likely to be a place/company name
-                fd["姓名"] = cn_names[-1]
-            else:
-                fd["姓名"] = "未知"
+            cn_names = re.findall(r'[一-鿿]{2,4}', Path(fd["文件名"]).stem)
+            fd["姓名"] = cn_names[-1] if cn_names else "未知"
 
     progress_bar.progress(0.8, text="匹配老师和金额...")
 
-    # Match teachers with file amounts
-    teacher_amounts = {}  # name -> list of amounts
-    teacher_insurance = {}  # name -> total insurance
-    teacher_details = {}  # name -> list of detail amounts
-
+    # Match
+    teacher_amounts = {}
+    teacher_details = {}
+    teacher_dates = {}
     for t in teachers:
-        name = t["姓名"]
-        teacher_amounts[name] = 0.0
-        teacher_insurance[name] = 0.0
-        teacher_details[name] = []
+        n = t["姓名"]
+        teacher_amounts[n] = 0.0
+        teacher_details[n] = []
+        teacher_dates[n] = []
 
-    # Process each file's amount
     for fd in file_data:
         p_name = fd.get("姓名", "")
         amt = fd.get("金额", 0)
         insurance = fd.get("保险费", 0)
-        # In OFD, insurance might be embedded in TotalAmount already
-        # For flight tickets with insurance: add insurance to total
         file_type = fd.get("文件类型", "")
+        date_str = fd.get("日期", "")
 
-        # Try to match name with teachers
         matched = False
         for t in teachers:
             t_name = t["姓名"]
             if p_name and (p_name in t_name or t_name in p_name):
-                if file_type == "飞机行程单" and insurance > 0:
-                    teacher_amounts[t_name] += amt + insurance
-                    teacher_details[t_name].append(amt + insurance)
-                else:
-                    teacher_amounts[t_name] += amt
-                    teacher_details[t_name].append(amt)
+                total = amt + insurance if (file_type == "飞机行程单" and insurance > 0) else amt
+                teacher_amounts[t_name] += total
+                teacher_details[t_name].append(total)
+                if date_str:
+                    teacher_dates[t_name].append(date_str)
                 matched = True
                 break
-
         if not matched and p_name:
-            # Teacher not in list, add dynamically
             teachers.append({"姓名": p_name, "银行卡号": ""})
-            if file_type == "飞机行程单" and insurance > 0:
-                teacher_amounts[p_name] = amt + insurance
-                teacher_details[p_name] = [amt + insurance]
-            else:
-                teacher_amounts[p_name] = amt
-                teacher_details[p_name] = [amt]
+            total = amt + insurance if (file_type == "飞机行程单" and insurance > 0) else amt
+            teacher_amounts[p_name] = total
+            teacher_details[p_name] = [total]
+            if date_str:
+                teacher_dates[p_name] = [date_str]
 
-    progress_bar.progress(0.9, text="生成Excel...")
+    progress_bar.progress(0.9, text="生成结果...")
 
-    # Build final data
+    # Build output: Excel uses teacher name only; rename files use "段 {name}"
     output_teachers = []
+    rename_map = {}
+    file_lookup = {fd["文件名"]: fd for fd in file_data}
     total = 0
+
     for t in teachers:
         name = t["姓名"]
         amt = teacher_amounts.get(name, 0)
         detail = teacher_details.get(name, [])
         output_teachers.append({
-            "姓名": f"段 {name}",
+            "姓名": name,
             "银行卡号": t.get("银行卡号", ""),
             "实发金额": amt,
             "明细金额": detail
         })
         total += amt
 
+    # Build rename map: for each uploaded file, find matching teacher and create new name
+    for orig_name in file_map:
+        fd = file_lookup.get(orig_name)
+        if fd:
+            p_name = fd.get("姓名", "")
+            # Find matching teacher
+            teacher_name = None
+            for t in teachers:
+                if p_name and (p_name in t["姓名"] or t["姓名"] in p_name):
+                    teacher_name = t["姓名"]
+                    break
+            if not teacher_name:
+                teacher_name = p_name
+
+            amt = fd.get("金额", 0) + (fd.get("保险费", 0) if fd.get("文件类型") == "飞机行程单" and fd.get("保险费", 0) > 0 else 0)
+            date_str = fd.get("日期", "")
+            if date_str:
+                try:
+                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                    disp_date = f"{dt.month}月{dt.day}日"
+                except:
+                    disp_date = date_str
+            else:
+                # Try to get from filename
+                disp_date = ""
+
+            new_name = f"段 {teacher_name} {disp_date} {amt:.2f}.pdf"
+            rename_map[orig_name] = new_name
+
     progress_bar.progress(1.0)
     status_text.text("✅ 完成")
 
-    # Show results
+    # Display results
     st.subheader("📊 处理结果")
-
-    # Table
     table_rows = []
     for ot in output_teachers:
         detail_str = " + ".join([f"{v:.2f}" for v in ot["明细金额"]])
         table_rows.append({
-            "姓名": ot["姓名"],
-            "银行卡号": ot["银行卡号"],
-            "实发金额": ot["实发金额"],
-            "明细": detail_str
+            "姓名": ot["姓名"], "银行卡号": ot["银行卡号"],
+            "实发金额": ot["实发金额"], "明细": detail_str
         })
     st.dataframe(table_rows, use_container_width=True, hide_index=True)
-
-    # Total
     st.metric("实发总金额", f"¥{total:.2f}")
 
-    # Generate Excel
-    excel_bytes = generate_travel_excel(output_teachers, project_name, project_code)
-    st.download_button(
-        "📥 下载差旅费Excel",
-        data=excel_bytes,
-        file_name=f"{project_name}_差旅费.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
-    )
+    # Excel download
+    col1, col2 = st.columns(2)
+    with col1:
+        excel_bytes = generate_travel_excel(output_teachers, project_name)
+        st.download_button("📥 下载差旅费Excel", data=excel_bytes,
+                          file_name=f"{project_name}_差旅费.xlsx",
+                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                          type="primary")
 
-    # Show raw parsed data (debug)
-    with st.expander("查看文件解析详情"):
-        for fd in file_data:
-            st.json(fd)
+    # ZIP download for renamed files
+    with col2:
+        if rename_map:
+            st.dataframe([{"原文件名": k, "新文件名": v} for k, v in rename_map.items()],
+                         use_container_width=True, hide_index=True)
+            zip_bytes = create_renamed_zip(file_map, rename_map)
+            st.download_button("📦 下载改名文件(ZIP)", data=zip_bytes,
+                              file_name=f"{project_name}_改名文件.zip",
+                              mime="application/zip", type="primary")
 
 
 def render_tab_labor(project_name, project_code):
-    """老师劳务费发放模块"""
+    """老师劳务费发放——从信息库拉取，或粘贴完整信息"""
     st.subheader("老师劳务费发放")
-    st.markdown("无需上传文件，粘贴老师信息即可生成劳务费Excel")
+    st.markdown("从信息库拉取或粘贴老师信息，补充执行时间/标准/学时")
 
-    # Paste teacher info
-    st.markdown("**粘贴老师信息** — 姓名、银行卡号、身份证号、手机号")
+    # Use teacher DB or paste
+    use_db = st.checkbox("从老师信息库拉取银行卡号/身份证号/手机号",
+                         value=bool(st.session_state.teacher_db), key="labor_use_db")
+
     info_text = st.text_area(
-        "支持表格或文本格式，每行一位老师",
-        placeholder="例（tab/空格/逗号分隔）：\n李阳	5月13日上午	讲课	13911080938	222325197012140317	6222600910058226273	1000	4\n刘山	5月13日下午	讲课	18982126401	510124196004260410	4367423818521407216	750	12\n王芳	5月15日全天	讲课	13601023762	110108196512152251	9558800200125094454	1000	8",
+        "粘贴数据，每行一位老师。格式：姓名 执行时间 标准(元/学时) 学时 工作内容（可选）",
+        placeholder="李阳  5月13日上午  讲课  13911080938  222325197012140317  6222600910058226273  1000  4\n王芳  5月15日全天  讲课  13601023762  110108196512152251  9558800200125094454  1000  8\n（自动识别字段，信息库已有则银行/手机/身份证自动补全）",
         height=200, key="labor_info"
     )
 
-    # Input fields for each row - or parse from pasted text
+    teachers = []
     if info_text.strip():
-        st.markdown("---")
-        st.markdown("**解析结果预览**（可修改）")
+        teachers = parse_teacher_info(info_text.strip())
+        # Merge with DB
+        if use_db and st.session_state.teacher_db:
+            db_lookup = {t["姓名"]: t for t in st.session_state.teacher_db}
+            for t in teachers:
+                db_entry = db_lookup.get(t["姓名"])
+                if db_entry:
+                    if not t.get("手机号") and db_entry.get("手机号"):
+                        t["手机号"] = db_entry["手机号"]
+                    if not t.get("身份证号") and db_entry.get("身份证号"):
+                        t["身份证号"] = db_entry["身份证号"]
+                    if not t.get("银行卡号") and db_entry.get("银行卡号"):
+                        t["银行卡号"] = db_entry["银行卡号"]
 
-        # Parse the pasted text
-        lines = [l.strip() for l in info_text.strip().split("\n") if l.strip()]
-        parsed_teachers = []
-        for line in lines:
-            parts = re.split(r"[\t,，、\s]{1,}", line)
-            parts = [p.strip() for p in parts if p.strip()]
-            if len(parts) >= 3:
-                teacher = {
-                    "姓名": parts[0],
-                    "执行时间": parts[1] if len(parts) > 1 else "",
-                    "工作内容": parts[2] if len(parts) > 2 else "讲课",
-                    "手机号": "",
-                    "身份证号": "",
-                    "银行卡号": "",
-                    "标准": 0,
-                    "学时": 0
-                }
-                for p in parts[3:]:
-                    if re.match(r"^\d{11}$", p):
-                        teacher["手机号"] = p
-                    elif re.match(r"^\d{17}[\dXx]$", p) or re.match(r"^\d{18}$", p):
-                        teacher["身份证号"] = p
-                    elif re.match(r"^\d{15,}$", p) and len(p) >= 15:
-                        teacher["银行卡号"] = p
-                    elif re.match(r"^\d+(\.\d+)?$", p):
-                        if not teacher["标准"]:
-                            teacher["标准"] = float(p)
-                        else:
-                            teacher["学时"] = float(p)
-                parsed_teachers.append(teacher)
-
-        if parsed_teachers:
-            st.dataframe(parsed_teachers, use_container_width=True, hide_index=True)
-            teachers = parsed_teachers
+        valid = [t for t in teachers if t.get("标准") and t.get("学时")]
+        if valid:
+            st.dataframe(valid, use_container_width=True, hide_index=True)
+            st.success(f"识别到 {len(valid)} 条有效记录")
+            teachers = valid
         else:
-            st.warning("无法解析粘贴内容，请检查格式")
+            st.warning("缺少标准(元/学时)或学时字段，请在每行末尾加上数字")
             teachers = []
-    else:
-        teachers = []
 
     if st.button("🚀 生成劳务费Excel", type="primary", key="labor_btn"):
         if not teachers:
-            st.warning("请先粘贴老师信息")
+            st.warning("请先粘贴有效信息")
             return
 
         excel_bytes = generate_labor_excel(teachers, project_name, project_code)
-        st.download_button(
-            "📥 下载劳务费Excel",
-            data=excel_bytes,
-            file_name=f"{project_name}_劳务费.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
-
-        # Show total
         total = sum(float(t.get("标准", 0)) * float(t.get("学时", 0)) for t in teachers)
         st.metric("总金额", f"¥{total:.2f}")
+        st.download_button("📥 下载劳务费Excel", data=excel_bytes,
+                          file_name=f"{project_name}_劳务费.xlsx",
+                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                          type="primary")
 
 
 if __name__ == "__main__":
