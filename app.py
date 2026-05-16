@@ -205,8 +205,14 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("配置")
-        api_key = st.text_input("DeepSeek API Key", type="password",
-                                help="https://platform.deepseek.com/ 获取")
+        # Load from Streamlit secrets if configured
+        default_key = st.secrets.get("DEEPSEEK_API_KEY", "")
+        api_key = st.text_input(
+            "DeepSeek API Key",
+            type="password",
+            value=default_key,
+            help="已配置默认Key则自动填入，可覆盖。https://platform.deepseek.com/ 获取"
+        )
         project_name = st.text_input("项目名称", value="默认项目")
         surname_prefix = st.text_input("姓氏前缀", value="段",
                                        help="文件名前缀，如'段' → '段 刘延川 4月15日 880.00.pdf'")
