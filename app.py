@@ -1070,64 +1070,83 @@ def render_tab_report(project_name):
                 member_rows.add(idx)
 
     n_data = len(display_df)
-    n_blank = 50  # extra blank rows
+    n_blank = 50
+    total = n_data + n_blank
 
-    # Build rows data (plain values, no pandas dependency)
-    rows_data = []
-    for idx in range(len(display_df)):
-        row = display_df.iloc[idx]
-        vals = [str(row.iloc[j]) if pd.notna(row.iloc[j]) else "" for j in range(len(selected))]
-        rows_data.append(vals)
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
-    html = _build_report_html(title, selected, rows_data, member_rows, n_data + n_blank)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "报到表"
 
-    st.components.v1.html(html, height=700, scrolling=True)
-    st.info("💡 **Ctrl+P** → 纸张选 **A3** → 方向选 **横向** → 边距选 **窄** → 打印/另存PDF")
+    # Page setup: A3 landscape
+    ws.page_setup.paperSize = 8
+    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.page_margins.left = 0.5
+    ws.page_margins.right = 0.5
+    ws.page_margins.top = 0.6
+    ws.page_margins.bottom = 0.6
 
+    # Repeat header row on each printed page
+    ws.print_title_rows = '2:2'
 
-def _build_report_html(title: str, headers: list, rows_data: list, member_rows: set, total_rows: int) -> str:
-    """Build A3 landscape HTML table with print CSS"""
-    hdr_html = "".join(f"<th>{h}</th>" for h in headers)
-    rows_html = ""
+    thin = Border(left=Side('thin'), right=Side('thin'),
+                  top=Side('thin'), bottom=Side('thin'))
+    center = Alignment(horizontal='center', vertical='center')
+    title_font = Font(name='宋体', bold=True, size=16)
+    header_font = Font(name='宋体', bold=True, size=10)
+    normal_font = Font(name='宋体', size=10)
+    bold_font = Font(name='宋体', bold=True, size=10)
 
-    for idx in range(total_rows):
-        if idx < len(rows_data):
-            row = rows_data[idx]
-            is_member = idx in member_rows
-            cls = ' class="member"' if is_member else ''
-            cells = "".join(f"<td{cls}>{row[j]}</td>" for j in range(len(headers)))
-            rows_html += f"<tr{cls}>{cells}</tr>\n"
+    # Row 1: Title
+    last_col = get_column_letter(len(selected))
+    ws.merge_cells(f'A1:{last_col}1')
+    ws['A1'] = title
+    ws['A1'].font = title_font
+    ws['A1'].alignment = center
+    ws.row_dimensions[1].height = 40
+
+    # Row 2: Headers
+    for ci, h in enumerate(selected, 1):
+        cell = ws.cell(row=2, column=ci, value=str(h))
+        cell.font = header_font
+        cell.alignment = center
+        cell.border = thin
+    ws.row_dimensions[2].height = 30
+
+    # Data + blank rows
+    for ri in range(total):
+        row_num = 3 + ri
+        ws.row_dimensions[row_num].height = 35
+        if ri < n_data:
+            row = display_df.iloc[ri]
+            is_member = ri in member_rows
+            fnt = bold_font if is_member else normal_font
+            for ci in range(len(selected)):
+                val = row.iloc[ci]
+                display = str(val) if pd.notna(val) else ""
+                cell = ws.cell(row=row_num, column=ci+1, value=display)
+                cell.font = fnt
+                cell.alignment = center
+                cell.border = thin
         else:
-            cells = "".join("<td>&nbsp;</td>" for _ in headers)
-            rows_html += f"<tr>{cells}</tr>\n"
+            for ci in range(len(selected)):
+                cell = ws.cell(row=row_num, column=ci+1, value="")
+                cell.border = thin
 
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-@page {{
-  size: A3 landscape;
-  margin: 15mm 10mm;
-}}
-* {{ margin:0; padding:0; box-sizing:border-box; }}
-body {{ font-family: '宋体', SimSun, serif; font-size: 11pt; }}
-.header {{ text-align:center; font-size:18pt; font-weight:bold; padding:10px 0 6px 0; }}
-table {{ width:100%; border-collapse:collapse; }}
-thead {{ display:table-header-group; }}
-th {{
-  background:#f0f0f0; font-weight:bold; text-align:center; padding:4px 6px;
-  border:1px solid #000; font-size:10pt; white-space:nowrap;
-}}
-td {{
-  border:1px solid #000; padding:4px 6px; text-align:center; height:35px;
-  font-size:10pt; vertical-align:middle;
-}}
-tr.member td {{ font-weight:bold; }}
-@media print {{
-  .no-print {{ display:none; }}
-  body {{ margin:0; }}
-  thead {{ display:table-header-group; }}
-}}
-</style></head><body>
-<div class="header">{title}</div>
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    st.success(f"生成完成：实际 {n_data} 人，总行 {total} 行（含 {n_blank} 行空白）")
+    st.download_button("📥 下载报到表 Excel", data=buf,
+                       file_name=f"{title}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       type="primary")
 <table>
 <thead><tr>{hdr_html}</tr></thead>
 <tbody>{rows_html}</tbody>
