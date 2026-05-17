@@ -1086,10 +1086,10 @@ def render_tab_report(project_name):
     ws.page_setup.orientation = 'landscape'
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
-    ws.page_margins.left = 0.5
-    ws.page_margins.right = 0.5
-    ws.page_margins.top = 0.6
-    ws.page_margins.bottom = 0.6
+    ws.page_margins.left = 0.4
+    ws.page_margins.right = 0.4
+    ws.page_margins.top = 0.5
+    ws.page_margins.bottom = 0.5
 
     # Repeat header row on each printed page
     ws.print_title_rows = '2:2'
@@ -1102,20 +1102,49 @@ def render_tab_report(project_name):
     normal_font = Font(name='宋体', size=10)
     bold_font = Font(name='宋体', bold=True, size=10)
 
+    # Add blank columns for manual entry (signature, payment, etc.)
+    extra_cols = ["学员签到", "付款方式", "金额", "备注"]
+    all_headers = list(selected) + extra_cols
+    num_cols = len(all_headers)
+
+    # Column widths: auto for selected, fixed for extras
+    col_widths = {}
+    for i, h in enumerate(selected):
+        name = str(h)
+        if '序号' in name: col_widths[i] = 6
+        elif '省份' in name or '地区' in name: col_widths[i] = 8
+        elif '姓名' in name: col_widths[i] = 10
+        elif '身份证' in name: col_widths[i] = 22
+        elif '手机' in name or '电话' in name: col_widths[i] = 14
+        elif '单位' in name: col_widths[i] = 22
+        elif '发票' in name: col_widths[i] = 8
+        elif '纳税' in name: col_widths[i] = 22
+        elif '邮箱' in name: col_widths[i] = 20
+        else: col_widths[i] = 12
+
+    # Widths for extra columns
+    extra_widths = [10, 10, 10, 14]
+
     # Row 1: Title
-    last_col = get_column_letter(len(selected))
+    last_col = get_column_letter(num_cols)
     ws.merge_cells(f'A1:{last_col}1')
     ws['A1'] = title
     ws['A1'].font = title_font
     ws['A1'].alignment = center
-    ws.row_dimensions[1].height = 40
+    ws.row_dimensions[1].height = 42
 
     # Row 2: Headers
-    for ci, h in enumerate(selected, 1):
+    for ci, h in enumerate(all_headers, 1):
         cell = ws.cell(row=2, column=ci, value=str(h))
         cell.font = header_font
         cell.alignment = center
         cell.border = thin
+        # Set column width
+        if ci <= len(selected):
+            ws.column_dimensions[get_column_letter(ci)].width = col_widths.get(ci-1, 12)
+        else:
+            ei = ci - len(selected) - 1
+            ws.column_dimensions[get_column_letter(ci)].width = extra_widths[ei] if ei < len(extra_widths) else 12
     ws.row_dimensions[2].height = 30
 
     # Data + blank rows
@@ -1133,8 +1162,14 @@ def render_tab_report(project_name):
                 cell.font = fnt
                 cell.alignment = center
                 cell.border = thin
+            # Blank extra columns
+            for ci in range(len(extra_cols)):
+                cell = ws.cell(row=row_num, column=len(selected)+ci+1, value="")
+                cell.font = fnt
+                cell.alignment = center
+                cell.border = thin
         else:
-            for ci in range(len(selected)):
+            for ci in range(num_cols):
                 cell = ws.cell(row=row_num, column=ci+1, value="")
                 cell.border = thin
 
