@@ -1038,8 +1038,9 @@ def render_tab_report(project_name):
     all_cols = list(df.columns)
     st.markdown("### 选择保留的列")
 
-    # Suggest defaults: first few common columns
-    suggest = [c for c in all_cols if any(k in str(c) for k in ['序号','省份','姓名','身份证','手机','单位','发票','纳税','邮箱'])]
+    # Suggest defaults: match user's desired order
+    desired_order = ['序号','省份','姓名','身份证','手机','发票类型','纳税人名称','纳税人识别号','邮箱']
+    suggest = [c for c in desired_order if c in all_cols]
     selected = st.multiselect("勾选需要显示的列", all_cols, default=suggest[:13])
 
     if not selected:
@@ -1096,14 +1097,14 @@ def render_tab_report(project_name):
 
     thin = Border(left=Side('thin'), right=Side('thin'),
                   top=Side('thin'), bottom=Side('thin'))
-    center = Alignment(horizontal='center', vertical='center')
+    center_wrap = Alignment(horizontal='center', vertical='center', wrap_text=True)
     title_font = Font(name='宋体', bold=True, size=16)
     header_font = Font(name='宋体', bold=True, size=10)
     normal_font = Font(name='宋体', size=10)
     bold_font = Font(name='宋体', bold=True, size=10)
 
-    # Add blank columns for manual entry (signature, payment, etc.)
-    extra_cols = ["学员签到", "付款方式", "金额", "备注"]
+    # Add blank columns for manual entry
+    extra_cols = ["本人签字", "付款方式", "金额", "备注"]
     all_headers = list(selected) + extra_cols
     num_cols = len(all_headers)
 
@@ -1130,14 +1131,14 @@ def render_tab_report(project_name):
     ws.merge_cells(f'A1:{last_col}1')
     ws['A1'] = title
     ws['A1'].font = title_font
-    ws['A1'].alignment = center
+    ws['A1'].alignment = center_wrap
     ws.row_dimensions[1].height = 42
 
     # Row 2: Headers
     for ci, h in enumerate(all_headers, 1):
         cell = ws.cell(row=2, column=ci, value=str(h))
         cell.font = header_font
-        cell.alignment = center
+        cell.alignment = center_wrap
         cell.border = thin
         # Set column width
         if ci <= len(selected):
@@ -1160,17 +1161,18 @@ def render_tab_report(project_name):
                 display = str(val) if pd.notna(val) else ""
                 cell = ws.cell(row=row_num, column=ci+1, value=display)
                 cell.font = fnt
-                cell.alignment = center
+                cell.alignment = center_wrap
                 cell.border = thin
             # Blank extra columns
             for ci in range(len(extra_cols)):
                 cell = ws.cell(row=row_num, column=len(selected)+ci+1, value="")
                 cell.font = fnt
-                cell.alignment = center
+                cell.alignment = center_wrap
                 cell.border = thin
         else:
             for ci in range(num_cols):
                 cell = ws.cell(row=row_num, column=ci+1, value="")
+                cell.alignment = center_wrap
                 cell.border = thin
 
     buf = io.BytesIO()
