@@ -1147,11 +1147,6 @@ def render_tab_report(project_name):
                        file_name=f"{title}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        type="primary")
-<table>
-<thead><tr>{hdr_html}</tr></thead>
-<tbody>{rows_html}</tbody>
-</table>
-</body></html>"""
 
 
 if __name__ == "__main__":
