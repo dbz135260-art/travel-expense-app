@@ -1004,13 +1004,14 @@ def render_tab_report(project_name):
     with col1:
         source_file = st.file_uploader("上传学员信息表", type=["xls", "xlsx"], key="rpt_source")
     with col2:
-        member_file = st.file_uploader("上传会员单位表（可选，自动加粗）", type=["xls", "xlsx"], key="rpt_member")
+        member_file = st.file_uploader("会员单位表（可选，内置默认，上传可覆盖）", type=["xls", "xlsx"], key="rpt_member")
 
     if source_file is None:
         st.info("请上传学员信息表")
         return
 
     import pandas as pd
+    from pathlib import Path
 
     # Read source
     try:
@@ -1019,20 +1020,36 @@ def render_tab_report(project_name):
         st.error(f"读取文件失败: {e}")
         return
 
-    # Read member list
+    # Read member list — auto-load from repo, override if user uploads
     member_set = set()
-    member_col_name = None
+    if "rpt_member_loaded" not in st.session_state:
+        bundled = Path(__file__).parent / "会员单位表.xls"
+        if bundled.exists():
+            try:
+                mdf = pd.read_excel(str(bundled))
+                for col in mdf.columns:
+                    if '单位' in str(col):
+                        member_set = set(mdf[col].dropna().astype(str).str.strip().str.replace('　', '').str.replace(' ', ''))
+                        break
+                st.session_state.rpt_member_loaded = member_set
+                st.info(f"已加载内置会员单位 {len(member_set)} 家")
+            except:
+                st.session_state.rpt_member_loaded = set()
+
     if member_file:
         try:
             mdf = pd.read_excel(member_file)
             for col in mdf.columns:
                 if '单位' in str(col):
                     member_set = set(mdf[col].dropna().astype(str).str.strip().str.replace('　', '').str.replace(' ', ''))
-                    member_col_name = str(col)
                     break
-            st.success(f"已加载会员单位 {len(member_set)} 家")
+            st.success(f"已覆盖加载会员单位 {len(member_set)} 家")
         except Exception as e:
             st.warning(f"会员表读取失败（不影响主功能）: {e}")
+
+    # Fallback to session_state (auto-loaded) if no upload
+    if not member_set and st.session_state.get("rpt_member_loaded"):
+        member_set = st.session_state.rpt_member_loaded
 
     # Column picker
     all_cols = list(df.columns)
