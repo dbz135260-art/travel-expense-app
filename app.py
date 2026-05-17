@@ -502,9 +502,7 @@ def main():
         project_name = st.text_input("项目名称", value="2025-N4-PX16")
         project_code = st.text_input("项目号", value="2025-N4-PX16")
 
-    if not api_key and "DEEPSEEK_API_KEY" not in st.secrets:
-        st.warning("请在左侧输入 DeepSeek API Key")
-        st.stop()
+    # Tab 4 (报道表) doesn't need API key; tabs 1-3 check internally
 
     # ─── Teacher Database (session-wide) ──────────────
     if "teacher_db" not in st.session_state:
@@ -581,6 +579,9 @@ def render_tab_subsidy(api_key, project_name):
     st.success(f"已上传 {len(uploaded_files)} 个文件")
 
     if not st.button("🚀 开始计算", type="primary", key="subsidy_btn"):
+        return
+    if not api_key:
+        st.error("请在左侧输入 DeepSeek API Key 后再试")
         return
 
     progress_bar = st.progress(0, text="解析PDF中...")
@@ -734,6 +735,9 @@ def render_tab_travel(api_key, project_name, project_code):
             teachers = parse_teacher_info(bank_text.strip())
 
     if not st.button("🚀 处理并生成", type="primary", key="travel_btn"):
+        return
+    if not api_key:
+        st.error("请在左侧输入 DeepSeek API Key 后再试")
         return
     if not teachers:
         st.warning("请先输入老师信息")
