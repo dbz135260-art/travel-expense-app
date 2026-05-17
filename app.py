@@ -558,7 +558,7 @@ def main():
                 st.session_state.teacher_db = []
                 st.rerun()
 
-    tab1, tab2, tab3 = st.tabs(["💰 差旅补助计算", "✈️ 老师差旅报销", "👨‍🏫 老师劳务费发放"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💰 差旅补助计算", "✈️ 老师差旅报销", "👨‍🏫 老师劳务费发放", "📋 学员报到表"])
 
     with tab1:
         render_tab_subsidy(api_key, project_name)
@@ -566,6 +566,8 @@ def main():
         render_tab_travel(api_key, project_name, project_code)
     with tab3:
         render_tab_labor(project_name, project_code)
+    with tab4:
+        render_tab_report(project_name)
 
 
 def render_tab_subsidy(api_key, project_name):
@@ -991,6 +993,146 @@ def render_tab_labor(project_name, project_code):
                           file_name=f"{project_name}_劳务费.xlsx",
                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                           type="primary")
+
+
+def render_tab_report(project_name):
+    """学员报到表生成——A3横版打印"""
+    st.subheader("学员报到表生成")
+    st.markdown("上传学员信息表，选保留列，生成A3横版打印报到表")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        source_file = st.file_uploader("上传学员信息表", type=["xls", "xlsx"], key="rpt_source")
+    with col2:
+        member_file = st.file_uploader("上传会员单位表（可选，自动加粗）", type=["xls", "xlsx"], key="rpt_member")
+
+    if source_file is None:
+        st.info("请上传学员信息表")
+        return
+
+    import pandas as pd
+
+    # Read source
+    try:
+        df = pd.read_excel(source_file)
+    except Exception as e:
+        st.error(f"读取文件失败: {e}")
+        return
+
+    # Read member list
+    member_set = set()
+    member_col_name = None
+    if member_file:
+        try:
+            mdf = pd.read_excel(member_file)
+            for col in mdf.columns:
+                if '单位' in str(col):
+                    member_set = set(mdf[col].dropna().astype(str).str.strip().str.replace('　', '').str.replace(' ', ''))
+                    member_col_name = str(col)
+                    break
+            st.success(f"已加载会员单位 {len(member_set)} 家")
+        except Exception as e:
+            st.warning(f"会员表读取失败（不影响主功能）: {e}")
+
+    # Column picker
+    all_cols = list(df.columns)
+    st.markdown("### 选择保留的列")
+
+    # Suggest defaults: first few common columns
+    suggest = [c for c in all_cols if any(k in str(c) for k in ['序号','省份','姓名','身份证','手机','单位','发票','纳税','邮箱'])]
+    selected = st.multiselect("勾选需要显示的列", all_cols, default=suggest[:13])
+
+    if not selected:
+        st.warning("至少选一列")
+        return
+
+    # Custom title
+    title = st.text_input("页眉大标题", value="学员报到表")
+
+    # Generate
+    if not st.button("📄 生成报到表", type="primary", key="rpt_btn"):
+        return
+
+    # Find unit column for member check
+    unit_col = None
+    for c in selected:
+        if '单位' in str(c):
+            unit_col = c
+            break
+
+    # Build rows
+    display_df = df[selected].copy()
+    member_rows = set()
+    if unit_col and member_set:
+        for idx, row in display_df.iterrows():
+            unit_val = str(row[unit_col]).strip().replace('　', '').replace(' ', '')
+            if unit_val in member_set:
+                member_rows.add(idx)
+
+    n_data = len(display_df)
+    n_blank = 50  # extra blank rows
+
+    # Build rows data (plain values, no pandas dependency)
+    rows_data = []
+    for idx in range(len(display_df)):
+        row = display_df.iloc[idx]
+        vals = [str(row.iloc[j]) if pd.notna(row.iloc[j]) else "" for j in range(len(selected))]
+        rows_data.append(vals)
+
+    html = _build_report_html(title, selected, rows_data, member_rows, n_data + n_blank)
+
+    st.components.v1.html(html, height=700, scrolling=True)
+    st.info("💡 **Ctrl+P** → 纸张选 **A3** → 方向选 **横向** → 边距选 **窄** → 打印/另存PDF")
+
+
+def _build_report_html(title: str, headers: list, rows_data: list, member_rows: set, total_rows: int) -> str:
+    """Build A3 landscape HTML table with print CSS"""
+    hdr_html = "".join(f"<th>{h}</th>" for h in headers)
+    rows_html = ""
+
+    for idx in range(total_rows):
+        if idx < len(rows_data):
+            row = rows_data[idx]
+            is_member = idx in member_rows
+            cls = ' class="member"' if is_member else ''
+            cells = "".join(f"<td{cls}>{row[j]}</td>" for j in range(len(headers)))
+            rows_html += f"<tr{cls}>{cells}</tr>\n"
+        else:
+            cells = "".join("<td>&nbsp;</td>" for _ in headers)
+            rows_html += f"<tr>{cells}</tr>\n"
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+@page {{
+  size: A3 landscape;
+  margin: 15mm 10mm;
+}}
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ font-family: '宋体', SimSun, serif; font-size: 11pt; }}
+.header {{ text-align:center; font-size:18pt; font-weight:bold; padding:10px 0 6px 0; }}
+table {{ width:100%; border-collapse:collapse; }}
+thead {{ display:table-header-group; }}
+th {{
+  background:#f0f0f0; font-weight:bold; text-align:center; padding:4px 6px;
+  border:1px solid #000; font-size:10pt; white-space:nowrap;
+}}
+td {{
+  border:1px solid #000; padding:4px 6px; text-align:center; height:35px;
+  font-size:10pt; vertical-align:middle;
+}}
+tr.member td {{ font-weight:bold; }}
+@media print {{
+  .no-print {{ display:none; }}
+  body {{ margin:0; }}
+  thead {{ display:table-header-group; }}
+}}
+</style></head><body>
+<div class="header">{title}</div>
+<table>
+<thead><tr>{hdr_html}</tr></thead>
+<tbody>{rows_html}</tbody>
+</table>
+</body></html>"""
 
 
 if __name__ == "__main__":
