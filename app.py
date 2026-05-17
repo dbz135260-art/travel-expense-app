@@ -1054,15 +1054,35 @@ def render_tab_report(project_name):
     if not st.button("📄 生成报到表", type="primary", key="rpt_btn"):
         return
 
-    # Find unit column for member check
+    # Find unit column for member check (单位名称 or 纳税人名称)
     unit_col = None
     for c in selected:
-        if '单位' in str(c):
+        if '单位' in str(c) or '纳税' in str(c):
             unit_col = c
             break
 
     # Build rows
     display_df = df[selected].copy()
+
+    # Sort: by 省份 first, then by 纳税人名称/单位名称
+    sort_cols = []
+    for c in selected:
+        if '省份' in str(c) or '地区' in str(c) or str(c).strip() == '省':
+            sort_cols.append(c)
+            break
+    for c in selected:
+        if '纳税' in str(c) or '单位' in str(c):
+            sort_cols.append(c)
+            break
+    if sort_cols:
+        display_df = display_df.sort_values(by=sort_cols, na_position='last').reset_index(drop=True)
+
+    # Auto-fill 序号 column
+    for c in selected:
+        if '序号' in str(c):
+            display_df[c] = range(1, len(display_df) + 1)
+            break
+
     member_rows = set()
     if unit_col and member_set:
         for idx, row in display_df.iterrows():
