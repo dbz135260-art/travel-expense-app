@@ -765,8 +765,7 @@ def render_tab_travel(api_key, project_name, project_code):
         st.error("请在左侧输入 DeepSeek API Key 后再试")
         return
     if not teachers:
-        st.warning("请先输入老师信息")
-        return
+        st.info("未提供老师信息，将直接从文件提取（银行卡号为空）")
 
     progress_bar = st.progress(0, text="解析文件中...")
     status_text = st.empty()
