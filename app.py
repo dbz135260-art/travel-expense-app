@@ -122,6 +122,29 @@ def create_renamed_zip(file_map: Dict[str, bytes], rename_map: Dict[str, str]) -
     return buf.getvalue()
 
 
+
+def merge_pdfs(file_map):
+    """Merge all PDF files into a single PDF. OFD files are skipped."""
+    merged = fitz.open()
+    for fname, fbytes in file_map.items():
+        ext = fname.rsplit(".", 1)[-1].lower()
+        if ext != "pdf":
+            continue
+        try:
+            doc = fitz.open(stream=fbytes, filetype="pdf")
+            merged.insert_pdf(doc)
+            doc.close()
+        except Exception:
+            continue
+    if len(merged) == 0:
+        return b""
+    buf = io.BytesIO()
+    merged.save(buf)
+    merged.close()
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ─── Smart teacher info parser ──────────────────────
 # Auto-detect field types by pattern, regardless of order.
 
@@ -315,6 +338,7 @@ def generate_travel_excel(teachers: List[Dict], project_name: str) -> bytes:
     total_amount = 0
     for i, t in enumerate(teachers, 1):
         row_num = 3 + i
+        ws.row_dimensions[row_num].height = 30
         ws.cell(row=row_num, column=1, value=i).font = normal_font
         ws.cell(row=row_num, column=1).alignment = center
         ws.cell(row=row_num, column=1).border = thin_border
@@ -411,6 +435,7 @@ def generate_labor_excel(teachers: List[Dict], project_name: str, project_code: 
     total_amount = 0
     for i, t in enumerate(teachers, 1):
         row_num = 3 + i
+        ws.row_dimensions[row_num].height = 30
         vals = [
             i,
             t.get("执行时间", ""),
@@ -931,6 +956,17 @@ def render_tab_travel(api_key, project_name, project_code):
             st.download_button("📦 下载改名文件(ZIP)", data=zip_bytes,
                               file_name=f"{project_name}_改名文件.zip",
                               mime="application/zip", type="primary")
+
+    # PDF merge
+    st.markdown("---")
+    st.subheader("📄 PDF 合集（仅合并 PDF 文件，OFD 跳过）")
+    merged_pdf = merge_pdfs(file_map)
+    if merged_pdf:
+        st.download_button("📥 下载 PDF 合集", data=merged_pdf,
+                          file_name=f"{project_name}_发票合集.pdf",
+                          mime="application/pdf", type="primary")
+    else:
+        st.info("上传文件中没有 PDF，无法生成合集")
 
 
 def render_tab_labor(project_name, project_code):
