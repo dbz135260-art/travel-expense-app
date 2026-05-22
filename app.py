@@ -581,7 +581,7 @@ def main():
                 st.session_state.teacher_db = []
                 st.rerun()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["💰 差旅补助计算", "✈️ 老师差旅报销", "👨‍🏫 老师劳务费发放", "📋 学员报到表"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["💰 差旅补助计算", "✈️ 老师差旅报销", "👨‍🏫 老师劳务费发放", "📋 学员报到表", "📜 学员证书发证表"])
 
     with tab1:
         render_tab_subsidy(api_key, project_name)
@@ -591,6 +591,8 @@ def main():
         render_tab_labor(project_name, project_code)
     with tab4:
         render_tab_report(project_name)
+    with tab5:
+        render_tab_certificate()
 
 
 def render_tab_subsidy(api_key, project_name):
@@ -1032,6 +1034,215 @@ def render_tab_labor(project_name, project_code):
                           file_name=f"{project_name}_劳务费.xlsx",
                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                           type="primary")
+
+
+def generate_certificate_excel(students, cert_date, params):
+    """Generate 2-sheet certificate Excel matching the template format."""
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+
+    ws1 = wb.active
+    ws1.title = "发证"
+    ws1.page_setup.paperSize = 9
+    ws1.page_setup.orientation = "portrait"
+    ws1.page_margins.left = 0.4
+    ws1.page_margins.right = 0.4
+    ws1.page_margins.top = 0.5
+    ws1.page_margins.bottom = 0.5
+    ws1.print_title_rows = "1:1"
+
+    thin = Border(left=Side("thin"), right=Side("thin"),
+                  top=Side("thin"), bottom=Side("thin"))
+    center = Alignment(horizontal="center", vertical="center")
+    wrap = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    hdr_font = Font(name="宋体", bold=True, size=11)
+    norm_font = Font(name="宋体", size=11)
+
+    h1 = ["序号", "姓名", "身份证", "证书名称", "培训日期", "项目名称", "培训地点",
+          "起始证书有效期", "证书截止有效期", "证书编号", "学时", "成绩",
+          "是否公示", "发证单位", "发证日期", "上传部门", "负责人"]
+    ws1_ws = [6.63, 8.63, 19.45, 10.82, 23.27, 52.73, 9.82,
+              17.27, 15.27, 22.63, 9.27, 13.0, 13.0, 21.54, 13.82, 15.18, 16.45]
+
+    for ci, h in enumerate(h1, 1):
+        cell = ws1.cell(row=1, column=ci, value=h)
+        cell.font = hdr_font
+        cell.alignment = wrap if h in ("身份证",) else center
+        cell.border = thin
+        ws1.column_dimensions[get_column_letter(ci)].width = ws1_ws[ci - 1]
+    ws1.row_dimensions[1].height = 24
+
+    year = params["cert_year"]
+    seq_start = int(params["cert_seq_start"])
+    for i, s in enumerate(students):
+        row = 2 + i
+        ws1.row_dimensions[row].height = 24
+        cert_no = "CASEI-HYPX-" + year + "-" + str(seq_start + i).zfill(4)
+        vals = [
+            i + 1,
+            s.get("姓名", ""),
+            s.get("身份证", ""),
+            "培训证明",
+            params.get("train_date", ""),
+            params.get("project_name", ""),
+            params.get("train_location", ""),
+            "",
+            "长期",
+            cert_no,
+            params.get("hours", ""),
+            "",
+            "否",
+            "中国特种设备检验协会",
+            cert_date,
+            "",
+            params.get("person_in_charge", "段秉泽"),
+        ]
+        for ci, v in enumerate(vals, 1):
+            cell = ws1.cell(row=row, column=ci, value=v)
+            cell.font = norm_font
+            cell.alignment = wrap if h1[ci - 1] in ("身份证",) else center
+            cell.border = thin
+
+    ws2 = wb.create_sheet("打印")
+    ws2.page_setup.paperSize = 9
+    ws2.page_setup.orientation = "landscape"
+    ws2.page_margins.left = 0.4
+    ws2.page_margins.right = 0.4
+    ws2.page_margins.top = 0.5
+    ws2.page_margins.bottom = 0.5
+    ws2.print_title_rows = "1:1"
+
+    hdr_sizes = [10, 12, 10, 11, 10, 10, 11, 10]
+    h2 = ["序号", "省份", "姓名", "身份证", "手机", "单位", "证书编号", "备注"]
+    ws2_ws = [6.63, 10.0, 8.63, 19.45, 15.0, 36.27, 22.63, 8.0]
+
+    for ci, h in enumerate(h2, 1):
+        cell = ws2.cell(row=1, column=ci, value=h)
+        cell.font = Font(name="宋体", bold=True, size=hdr_sizes[ci - 1])
+        cell.alignment = wrap
+        cell.border = thin
+        ws2.column_dimensions[get_column_letter(ci)].width = ws2_ws[ci - 1]
+    ws2.row_dimensions[1].height = 30
+
+    for i, s in enumerate(students):
+        row = 2 + i
+        ws2.row_dimensions[row].height = 30
+        cert_no = "CASEI-HYPX-" + year + "-" + str(seq_start + i).zfill(4)
+        vals = [
+            i + 1,
+            s.get("省份", ""),
+            s.get("姓名", ""),
+            s.get("身份证", ""),
+            s.get("手机", ""),
+            s.get("纳税人名称", ""),
+            cert_no,
+            "",
+        ]
+        for ci, v in enumerate(vals, 1):
+            cell = ws2.cell(row=row, column=ci, value=v)
+            cell.font = Font(name="宋体", size=10)
+            cell.alignment = wrap if ci in (4, 6) else Alignment(horizontal="center", vertical="center")
+            cell.border = thin
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def render_tab_certificate():
+    """Tab 5: Certificate issuance table generator"""
+    st.subheader("学员证书发证表生成")
+    st.markdown("上传报到表")
+
+    st.markdown("### 1. 上传学员数据")
+    src = st.file_uploader("上传报到表 Excel", type=["xlsx", "xls"], key="cert_src")
+    students = []
+    if src:
+        try:
+            import pandas as pd
+            df = pd.read_excel(src)
+            col_map = {}
+            for c in df.columns:
+                cs = str(c)
+                for k in ["省份", "姓名", "身份证", "手机", "纳税人名称"]:
+                    if k in cs:
+                        col_map[k] = c
+            for _, row in df.iterrows():
+                s = {}
+                for k in col_map:
+                    v = row[col_map[k]]
+                    if k in ("手机", "身份证") and pd.notna(v) and isinstance(v, float):
+                        s[k] = str(int(v))
+                    elif pd.notna(v):
+                        s[k] = str(v)
+                    else:
+                        s[k] = ""
+                if s.get("姓名"):
+                    students.append(s)
+            st.success("读取到 " + str(len(students)) + " 名学员")
+            import pandas as _pd
+            st.dataframe(_pd.DataFrame(students), use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error("读取失败: " + str(e))
+
+    st.markdown("### 2. 填写参数")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        proj = st.text_input("项目名称", key="cert_proj")
+        loc = st.text_input("培训地点", key="cert_loc")
+    with col2:
+        train_date = st.text_input("培训日期", placeholder="2026年6月11日-13日", key="cert_train_date")
+        hours = st.text_input("学时", value="32", key="cert_hours")
+    with col3:
+        cert_year = st.text_input("证书编号-年份", value="2026", key="cert_year")
+        cert_seq = st.text_input("证书编号-起始号", placeholder="0530", key="cert_seq")
+        person = st.text_input("负责人", value="段秉泽", key="cert_person")
+
+    st.markdown("**发证日期**")
+    m_col, d_col = st.columns(2)
+    with m_col:
+        mon = st.selectbox("月", list(range(1, 13)), key="cert_mon")
+    with d_col:
+        day = st.selectbox("日", list(range(1, 32)), key="cert_day")
+
+    if not st.button("生成发证表", type="primary", key="cert_btn"):
+        return
+    if not students:
+        st.warning("请先上传报到表")
+        return
+    if not cert_seq:
+        st.warning("请填写证书编号起始号")
+        return
+
+    from datetime import date
+    cert_date = date(int(cert_year), mon, day)
+    params = {
+        "project_name": proj,
+        "train_location": loc,
+        "train_date": train_date,
+        "hours": hours,
+        "cert_year": cert_year,
+        "cert_seq_start": cert_seq,
+        "person_in_charge": person,
+    }
+    xlsx = generate_certificate_excel(students, cert_date, params)
+    safe_name = proj.replace("/", "-").replace("\\", "-") if proj else "发证表"
+    end_seq = int(cert_seq) + len(students) - 1
+    st.success("生成完成: " + str(len(students)) + " 条记录")
+    label = "CASEI-HYPX-" + cert_year + "-" + cert_seq + " ~ CASEI-HYPX-" + cert_year + "-" + str(end_seq).zfill(4)
+    st.metric("证书编号范围", label)
+
+    st.download_button("下载发证表 Excel", data=xlsx,
+                       file_name=safe_name + "_证书发证表.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       type="primary")
+
+
+# ─── Tab 4: 学员报到表 ─────────────────────────────
 
 
 def render_tab_report(project_name):
