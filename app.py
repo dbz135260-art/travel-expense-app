@@ -12,6 +12,9 @@ import requests
 
 st.set_page_config(page_title="差旅/劳务费处理", page_icon="🧾", layout="wide")
 
+if "work_log" not in st.session_state:
+    st.session_state.work_log = []
+
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
@@ -121,6 +124,14 @@ def create_renamed_zip(file_map: Dict[str, bytes], rename_map: Dict[str, str]) -
     buf.seek(0)
     return buf.getvalue()
 
+
+def log_work(entry_type, summary, details=None):
+    """Add an entry to the work log"""
+    from datetime import datetime
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    entry = {"time": now, "type": entry_type, "summary": summary, "details": details or {}}
+    if "work_log" in st.session_state:
+        st.session_state.work_log.append(entry)
 
 
 def merge_pdfs(file_map):
@@ -527,6 +538,27 @@ def main():
         project_name = st.text_input("项目名称", value="2025-N4-PX16")
         project_code = st.text_input("项目号", value="2025-N4-PX16")
 
+        # Work log
+        st.markdown("---")
+        st.markdown("### 工作日志")
+        if st.button("清空日志", key="clear_log"):
+            st.session_state.work_log = []
+            st.rerun()
+        log_entries = st.session_state.get("work_log", [])
+        if log_entries:
+            st.caption(f"共 {len(log_entries)} 条记录")
+            for entry in log_entries[-10:]:  # show latest 10
+                st.text(f"[{entry.get('time','')}] {entry.get('type','')} {entry.get('summary','')}")
+            if len(log_entries) > 10:
+                st.caption(f"(更多 {len(log_entries)-10} 条请下载查看)")
+            import json
+            log_bytes = json.dumps(log_entries, ensure_ascii=False, indent=2).encode("utf-8")
+            st.download_button("下载工作日志", data=log_bytes,
+                              file_name=f"{project_code}_工作日志.json",
+                              mime="application/json")
+        else:
+            st.caption("暂无记录，生成报表后自动记录")
+
     # Tab 4 (报道表) doesn't need API key; tabs 1-3 check internally
 
     # ─── Teacher Database (session-wide) ──────────────
@@ -706,6 +738,7 @@ def render_tab_subsidy(api_key, project_name):
     progress_bar.progress(1.0)
     status_text.text("✅ 完成")
 
+    log_work("差旅补助", f"{len(results)} 人, 总¥{total_all:.2f}", {"人数": len(persons), "金额": total_all})
     st.subheader("明细")
     st.dataframe([{
         "姓名": r["姓名"], "日期": r["日期"], "票面金额": r["票面金额"],
@@ -928,6 +961,7 @@ def render_tab_travel(api_key, project_name, project_code):
     status_text.text("✅ 完成")
 
     # Display results
+    log_work("老师差旅报销", f"{len(output_teachers)} 人, 总¥{total:.2f}", {"人数": len(output_teachers), "金额": total})
     st.subheader("📊 处理结果")
     table_rows = []
     for ot in output_teachers:
@@ -1029,6 +1063,7 @@ def render_tab_labor(project_name, project_code):
 
         excel_bytes = generate_labor_excel(teachers, project_name, project_code)
         total = sum(float(t.get("标准", 0)) * float(t.get("学时", 0)) for t in teachers)
+        log_work("劳务费发放", f"{len(teachers)} 人, 总¥{total:.2f}", {"人数": len(teachers), "金额": total})
         st.metric("总金额", f"¥{total:.2f}")
         st.download_button("📥 下载劳务费Excel", data=excel_bytes,
                           file_name=f"{project_name}_劳务费.xlsx",
@@ -1232,6 +1267,7 @@ def render_tab_certificate():
     xlsx = generate_certificate_excel(students, cert_date, params)
     safe_name = proj.replace("/", "-").replace("\\", "-") if proj else "发证表"
     end_seq = int(cert_seq) + len(students) - 1
+    log_work("证书发证表", str(len(students)) + " 人, 编号 " + cert_year + "-" + cert_seq + "~" + str(end_seq).zfill(4))
     st.success("生成完成: " + str(len(students)) + " 条记录")
     label = "CASEI-HYPX-" + cert_year + "-" + cert_seq + " ~ CASEI-HYPX-" + cert_year + "-" + str(end_seq).zfill(4)
     st.metric("证书编号范围", label)
@@ -1466,9 +1502,10 @@ def render_tab_report(project_name):
     wb.save(buf)
     buf.seek(0)
 
+    log_work("学员报到表", f"{n_data} 人")
     st.success(f"生成完成：实际 {n_data} 人，总行 {total} 行（含 {n_blank} 行空白）")
     st.download_button("📥 下载报到表 Excel", data=buf,
-                       file_name=f"{title}.xlsx",
+                       file_name=f"{project_name}_{title}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        type="primary")
 
