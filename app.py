@@ -1271,7 +1271,7 @@ def generate_certificate_word(params: dict) -> bytes:
                 for r in p.runs[1:]:
                     r.text = ""
                 from docx.enum.text import WD_ALIGN_PARAGRAPH
-                p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             break
 
     buf = io.BytesIO()
