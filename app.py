@@ -1233,25 +1233,25 @@ def generate_certificate_word(params: dict) -> bytes:
     train_end = params.get("train_date_end", date.today())
     train_start = params.get("train_date_start", date.today())
 
-    start_str = f"{train_start.year}年{train_start.month:02d}月{train_start.day:02d}日"
-    end_str = f"{train_end.year}年{train_end.month:02d}月{train_end.day:02d}日"
-    date_range = f"{start_str}-{end_str}"
+    # Template format: "2026年04月15日-04月17日" (year only on first date)
+    s, e = train_start, train_end
+    old_date = f"{s.year}年{s.month:02d}月{s.day:02d}日-{e.month:02d}月{e.day:02d}日"
+    new_date = f"{s.year}年{s.month}月{s.day}日-{e.month}月{e.day}日"
     sign_date = f"{train_end.year}年{train_end.month:02d}月"
 
     template = Path(__file__).parent / "培训证明模板.docx"
     import docx
     doc = docx.Document(str(template))
 
-    # Find the paragraph with «姓名» and rebuild it
+    # Pass 1: fill training text paragraph (has «姓名» or "参加")
+    text_para = None
     for p in doc.paragraphs:
         full = "".join(r.text for r in p.runs)
         if "«姓名»" in full or "参加" in full:
+            text_para = p
             replaced = full
-            # Replace date range
-            replaced = replaced.replace(f"{start_str}-{end_str}", date_range)
-            # Replace project name
+            replaced = replaced.replace(old_date, new_date)
             replaced = replaced.replace("第四届起重机械检验检测与安全管理技术交流会", params.get("project_name", ""))
-            # Replace hours
             replaced = replaced.replace("20学时", f"{params.get('hours', '32')}学时")
             if replaced != full and p.runs:
                 p.runs[0].text = replaced
@@ -1259,14 +1259,15 @@ def generate_certificate_word(params: dict) -> bytes:
                     r.text = ""
             break
 
-    # Find the sign-off date paragraph
+    # Pass 2: sign-off date paragraph (short, only year+month)
     for p in doc.paragraphs:
+        if p is text_para:
+            continue
         full = "".join(r.text for r in p.runs)
-        if "年" in full and "月" in full and "中国" not in full:
-            # Matches date format like "2026年04月"
-            replaced = full.replace(full, sign_date)
+        txt = full.strip()
+        if txt and "年" in txt and txt.count("月") >= 1 and len(txt) <= 10 and "中国" not in txt:
             if p.runs:
-                p.runs[0].text = replaced
+                p.runs[0].text = sign_date
                 for r in p.runs[1:]:
                     r.text = ""
             break
@@ -1275,6 +1276,17 @@ def generate_certificate_word(params: dict) -> bytes:
     doc.save(buf)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _set_cell_text(cell, text):
+    """Clear all content in a table cell and set new text."""
+    p = cell.paragraphs[0]
+    for r in p.runs:
+        r.text = ""
+    if p.runs:
+        p.runs[0].text = text
+    else:
+        p.add_run(text)
 
 
 def generate_approval_word(params: dict, student_count: int) -> bytes:
@@ -1295,28 +1307,23 @@ def generate_approval_word(params: dict, student_count: int) -> bytes:
     template = Path(__file__).parent / "审批表模板.docx"
     import docx
     doc = docx.Document(str(template))
-
     table = doc.tables[0]
-    # Row 0: 项目名称 (col 1 merged across all cols — update first visible cell)
-    table.rows[0].cells[1].paragraphs[0].runs[0].text = params.get("project_name", "")
+
+    # Row 0: 项目名称
+    _set_cell_text(table.rows[0].cells[1], params.get("project_name", ""))
     # Row 1: 培训时间 (cell 1), 培训地点 (cell 4)
-    table.rows[1].cells[1].paragraphs[0].runs[0].text = date_range
-    table.rows[1].cells[4].paragraphs[0].runs[0].text = params.get("train_location", "")
+    _set_cell_text(table.rows[1].cells[1], date_range)
+    _set_cell_text(table.rows[1].cells[4], params.get("train_location", ""))
     # Row 2: 项目负责人 (cell 1), 发证数量 (cell 4)
-    table.rows[2].cells[1].paragraphs[0].runs[0].text = params.get("person_in_charge", "")
-    table.rows[2].cells[4].paragraphs[0].runs[0].text = str(student_count)
-    # Row 6: 证书号码号段 (cell 0)
-    table.rows[6].cells[0].paragraphs[0].runs[0].text = f"证书号码（号段）\n{cert_range}"
+    _set_cell_text(table.rows[2].cells[1], params.get("person_in_charge", ""))
+    _set_cell_text(table.rows[2].cells[4], str(student_count))
+    # Row 6: 证书号码号段 — merged, write to cell 0
+    _set_cell_text(table.rows[6].cells[0], f"证书号码（号段）\n{cert_range}")
 
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
     return buf.getvalue()
-
-
-# ─── Tab 5: Certificate issuance ───────────────────
-
-
 def render_tab_certificate():
     """Tab 5: Certificate issuance — unified params, Excel + 2 Word docs"""
     st.subheader("学员证书发证表生成")
