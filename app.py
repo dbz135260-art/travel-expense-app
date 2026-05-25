@@ -1279,14 +1279,15 @@ def generate_certificate_word(params: dict) -> bytes:
 
 
 def _set_cell_text(cell, text):
-    """Clear all content in a table cell and set new text."""
-    p = cell.paragraphs[0]
-    for r in p.runs:
-        r.text = ""
-    if p.runs:
-        p.runs[0].text = text
-    else:
-        p.add_run(text)
+    """Clear ALL paragraphs in a cell, set first paragraph to text."""
+    for i, p in enumerate(cell.paragraphs):
+        for r in p.runs:
+            r.text = ""
+        if i == 0:
+            if p.runs:
+                p.runs[0].text = text
+            else:
+                p.add_run(text)
 
 
 def generate_approval_word(params: dict, student_count: int) -> bytes:
