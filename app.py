@@ -1270,6 +1270,8 @@ def generate_certificate_word(params: dict) -> bytes:
                 p.runs[0].text = sign_date
                 for r in p.runs[1:]:
                     r.text = ""
+                from docx.enum.text import WD_ALIGN_PARAGRAPH
+                p.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
             break
 
     buf = io.BytesIO()
@@ -1395,69 +1397,56 @@ def render_tab_certificate():
     with c4:
         i_day = st.selectbox("日", list(range(1, 32)), key="cert_day")
 
-    if not st.button("🚀 生成全部", type="primary", key="cert_btn"):
-        return
-    if not students:
-        st.warning("请先上传报到表")
-        return
-    if not cert_seq:
-        st.warning("请填写证书编号起始号")
-        return
+    if st.button("🚀 生成全部", type="primary", key="cert_btn"):
+        if not students:
+            st.warning("请先上传报到表")
+        elif not cert_seq:
+            st.warning("请填写证书编号起始号")
+        else:
+            from datetime import date
+            train_start = date(int(cert_year), s_mon, s_day)
+            train_end = date(int(cert_year), e_mon, e_day)
+            cert_date_str = f"{int(cert_year)}年{i_mon:02d}月{i_day:02d}日"
 
-    from datetime import date
-    train_start = date(int(cert_year), s_mon, s_day)
-    train_end = date(int(cert_year), e_mon, e_day)
-    from datetime import date
-    cert_date = date(int(cert_year), i_mon, i_day)
-    cert_date_str = f"{int(cert_year)}年{i_mon:02d}月{i_day:02d}日"
+            params = {
+                "project_name": proj, "train_location": loc, "hours": hours,
+                "cert_year": cert_year, "cert_seq_start": cert_seq, "person_in_charge": person,
+                "train_date_start": train_start, "train_date_end": train_end,
+                "train_date": f"{train_start.year}年{train_start.month}月{train_start.day}日-{train_end.month}月{train_end.day}日",
+                "cert_date_str": cert_date_str,
+            }
+            end_seq = int(cert_seq) + len(students) - 1
+            safe_name = proj.replace("/", "-").replace("\\", "-")[:40] if proj else "发证表"
 
-    # Build unified params
-    params = {
-        "project_name": proj,
-        "train_location": loc,
-        "hours": hours,
-        "cert_year": cert_year,
-        "cert_seq_start": cert_seq,
-        "person_in_charge": person,
-        "train_date_start": train_start,
-        "train_date_end": train_end,
-        "train_date": f"{train_start.year}年{train_start.month}月{train_start.day}日-{train_end.month}月{train_end.day}日",
-        "cert_date_str": cert_date_str,
-    }
+            st.session_state.cert_xlsx = generate_certificate_excel(students, cert_date_str, params)
+            st.session_state.cert_word = generate_certificate_word(params)
+            st.session_state.cert_approval = generate_approval_word(params, len(students))
+            st.session_state.cert_safe_name = safe_name
+            st.session_state.cert_label = f"CASEI-HYPX-{cert_year}-{cert_seq} ~ CASEI-HYPX-{cert_year}-{str(end_seq).zfill(4)}"
+            st.session_state.cert_count = len(students)
+            st.session_state.cert_log = f"{len(students)} 人, 编号 {cert_year}-{cert_seq}~{str(end_seq).zfill(4)}"
+            st.rerun()
 
-    end_seq = int(cert_seq) + len(students) - 1
+    # Show download buttons from session_state (persist across downloads)
+    if st.session_state.get("cert_xlsx"):
+        log_work("证书发证表", st.session_state.cert_log)
+        st.success(f"生成完成: {st.session_state.cert_count} 条记录")
+        st.metric("证书编号范围", st.session_state.cert_label)
+        safe_name = st.session_state.cert_safe_name
 
-    # 1. Excel
-    xlsx = generate_certificate_excel(students, cert_date_str, params)
-    safe_name = proj.replace("/", "-").replace("\\", "-")[:40] if proj else "发证表"
-
-    # 2. Word: training certificate template
-    cert_word = generate_certificate_word(params)
-
-    # 3. Word: approval form
-    approval_word = generate_approval_word(params, len(students))
-
-    # Log
-    log_work("证书发证表", f"{len(students)} 人, 编号 {cert_year}-{cert_seq}~{str(end_seq).zfill(4)}")
-    st.success(f"生成完成: {len(students)} 条记录")
-
-    label = f"CASEI-HYPX-{cert_year}-{cert_seq} ~ CASEI-HYPX-{cert_year}-{str(end_seq).zfill(4)}"
-    st.metric("证书编号范围", label)
-
-    # Download buttons
-    dl1, dl2, dl3 = st.columns(3)
-    with dl1:
-        st.download_button("📥 发证表 Excel", data=xlsx,
-                          file_name=f"{safe_name}_证书发证表.xlsx",
-                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    with dl2:
-        st.download_button("📥 培训证明 Word", data=cert_word,
-                          file_name=f"{safe_name}_培训证明.docx",
-                          mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    with dl3:
-        st.download_button("📥 审批表 Word", data=approval_word,
-                          file_name=f"{safe_name}_审批表.docx",
-                          mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        dl1, dl2, dl3 = st.columns(3)
+        with dl1:
+            st.download_button("📥 发证表 Excel", data=st.session_state.cert_xlsx,
+                              file_name=f"{safe_name}_证书发证表.xlsx",
+                              mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with dl2:
+            st.download_button("📥 培训证明 Word", data=st.session_state.cert_word,
+                              file_name=f"{safe_name}_培训证明.docx",
+                              mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        with dl3:
+            st.download_button("📥 审批表 Word", data=st.session_state.cert_approval,
+                              file_name=f"{safe_name}_审批表.docx",
+                              mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
 # ─── Tab 4: 学员报到表 ─────────────────────────────
