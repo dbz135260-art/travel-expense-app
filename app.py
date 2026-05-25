@@ -535,8 +535,8 @@ def main():
         st.header("配置")
         default_key = st.secrets.get("DEEPSEEK_API_KEY", "")
         api_key = st.text_input("DeepSeek API Key", type="password", value=default_key)
-        project_name = st.text_input("项目名称", value="2025-N4-PX16")
-        project_code = st.text_input("项目号", value="2025-N4-PX16")
+        project_name = st.text_input("项目名称", value="2026-N4-PX")
+        project_code = st.text_input("项目号", value="2026-N4-PX")
 
         # Work log
         st.markdown("---")
@@ -1140,8 +1140,8 @@ def generate_certificate_excel(students, cert_date, params):
             cell.font = norm_font
             cell.alignment = wrap if h1[ci - 1] in ("身份证",) else center
             cell.border = thin
-            if ci == 15 and isinstance(v, date):
-                cell.number_format = 'YYYY-MM-DD'
+            if ci == 15:
+                cell.number_format = '@'
 
     ws2 = wb.create_sheet("打印")
     ws2.page_setup.paperSize = 9
@@ -1380,12 +1380,8 @@ def render_tab_certificate():
     with cc2:
         cert_seq = st.text_input("起始号", placeholder="0530", key="cert_seq")
 
-    st.markdown("**发证日期（默认 = 培训结束日）**")
-    cc3, cc4 = st.columns(2)
-    with cc3:
-        i_mon = st.selectbox("发证月", list(range(1, 13)), index=e_mon-1, key="cert_mon")
-    with cc4:
-        i_day = st.selectbox("发证日", list(range(1, 32)), index=e_day-1 if e_day-1 < 31 else 0, key="cert_day")
+    st.markdown("**发证日期（落款，默认 = 培训结束月）**")
+    i_mon = st.selectbox("发证月份", list(range(1, 13)), index=e_mon-1, key="cert_mon")
 
     if not st.button("🚀 生成全部", type="primary", key="cert_btn"):
         return
@@ -1399,7 +1395,7 @@ def render_tab_certificate():
     from datetime import date
     train_start = date(int(cert_year), s_mon, s_day)
     train_end = date(int(cert_year), e_mon, e_day)
-    cert_date = date(int(cert_year), i_mon, i_day)
+    cert_date_str = f"{int(cert_year)}年{i_mon:02d}月"
 
     # Build unified params
     params = {
@@ -1412,12 +1408,13 @@ def render_tab_certificate():
         "train_date_start": train_start,
         "train_date_end": train_end,
         "train_date": f"{train_start.year}年{train_start.month}月{train_start.day}日-{train_end.month}月{train_end.day}日",
+        "cert_date_str": cert_date_str,
     }
 
     end_seq = int(cert_seq) + len(students) - 1
 
     # 1. Excel
-    xlsx = generate_certificate_excel(students, cert_date, params)
+    xlsx = generate_certificate_excel(students, cert_date_str, params)
     safe_name = proj.replace("/", "-").replace("\\", "-")[:40] if proj else "发证表"
 
     # 2. Word: training certificate template
