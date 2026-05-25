@@ -1380,9 +1380,6 @@ def render_tab_certificate():
     with cc2:
         cert_seq = st.text_input("起始号", placeholder="0530", key="cert_seq")
 
-    st.markdown("**发证日期（落款，默认 = 培训结束月）**")
-    i_mon = st.selectbox("发证月份", list(range(1, 13)), index=e_mon-1, key="cert_mon")
-
     if not st.button("🚀 生成全部", type="primary", key="cert_btn"):
         return
     if not students:
@@ -1395,7 +1392,7 @@ def render_tab_certificate():
     from datetime import date
     train_start = date(int(cert_year), s_mon, s_day)
     train_end = date(int(cert_year), e_mon, e_day)
-    cert_date_str = f"{int(cert_year)}年{i_mon:02d}月"
+    cert_date_str = f"{int(cert_year)}年{e_mon:02d}月"
 
     # Build unified params
     params = {
