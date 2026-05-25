@@ -1380,6 +1380,13 @@ def render_tab_certificate():
     with cc2:
         cert_seq = st.text_input("起始号", placeholder="0530", key="cert_seq")
 
+    st.markdown("**发证日期（Excel 用）**")
+    c3, c4 = st.columns(2)
+    with c3:
+        i_mon = st.selectbox("月", list(range(1, 13)), index=e_mon-1, key="cert_mon")
+    with c4:
+        i_day = st.selectbox("日", list(range(1, 32)), key="cert_day")
+
     if not st.button("🚀 生成全部", type="primary", key="cert_btn"):
         return
     if not students:
@@ -1392,7 +1399,9 @@ def render_tab_certificate():
     from datetime import date
     train_start = date(int(cert_year), s_mon, s_day)
     train_end = date(int(cert_year), e_mon, e_day)
-    cert_date_str = f"{int(cert_year)}年{e_mon:02d}月"
+    from datetime import date
+    cert_date = date(int(cert_year), i_mon, i_day)
+    cert_date_str = f"{int(cert_year)}年{i_mon:02d}月{i_day:02d}日"
 
     # Build unified params
     params = {
