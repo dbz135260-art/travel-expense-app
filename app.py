@@ -1140,6 +1140,8 @@ def generate_certificate_excel(students, cert_date, params):
             cell.font = norm_font
             cell.alignment = wrap if h1[ci - 1] in ("身份证",) else center
             cell.border = thin
+            if ci == 15 and isinstance(v, date):
+                cell.number_format = 'YYYY-MM-DD'
 
     ws2 = wb.create_sheet("打印")
     ws2.page_setup.paperSize = 9
@@ -1188,10 +1190,136 @@ def generate_certificate_excel(students, cert_date, params):
     return buf.getvalue()
 
 
+# ─── Word template functions ───────────────────────
+
+
+def fill_docx_template(template_path: Path, replacements: Dict[str, str]) -> bytes:
+    """Read a .docx template, replace placeholder text in paragraphs and tables, return bytes."""
+    import docx
+    doc = docx.Document(str(template_path))
+
+    for p in doc.paragraphs:
+        full = "".join(r.text for r in p.runs)
+        replaced = full
+        for old, new in replacements.items():
+            replaced = replaced.replace(old, new)
+        if replaced != full and p.runs:
+            p.runs[0].text = replaced
+            for r in p.runs[1:]:
+                r.text = ""
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    full = "".join(r.text for r in p.runs)
+                    replaced = full
+                    for old, new in replacements.items():
+                        replaced = replaced.replace(old, new)
+                    if replaced != full and p.runs:
+                        p.runs[0].text = replaced
+                        for r in p.runs[1:]:
+                            r.text = ""
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def generate_certificate_word(params: dict) -> bytes:
+    """Fill the training certificate template with project-level params."""
+    from datetime import date
+    train_end = params.get("train_date_end", date.today())
+    train_start = params.get("train_date_start", date.today())
+
+    start_str = f"{train_start.year}年{train_start.month:02d}月{train_start.day:02d}日"
+    end_str = f"{train_end.year}年{train_end.month:02d}月{train_end.day:02d}日"
+    date_range = f"{start_str}-{end_str}"
+    sign_date = f"{train_end.year}年{train_end.month:02d}月"
+
+    template = Path(__file__).parent / "培训证明模板.docx"
+    import docx
+    doc = docx.Document(str(template))
+
+    # Find the paragraph with «姓名» and rebuild it
+    for p in doc.paragraphs:
+        full = "".join(r.text for r in p.runs)
+        if "«姓名»" in full or "参加" in full:
+            replaced = full
+            # Replace date range
+            replaced = replaced.replace(f"{start_str}-{end_str}", date_range)
+            # Replace project name
+            replaced = replaced.replace("第四届起重机械检验检测与安全管理技术交流会", params.get("project_name", ""))
+            # Replace hours
+            replaced = replaced.replace("20学时", f"{params.get('hours', '32')}学时")
+            if replaced != full and p.runs:
+                p.runs[0].text = replaced
+                for r in p.runs[1:]:
+                    r.text = ""
+            break
+
+    # Find the sign-off date paragraph
+    for p in doc.paragraphs:
+        full = "".join(r.text for r in p.runs)
+        if "年" in full and "月" in full and "中国" not in full:
+            # Matches date format like "2026年04月"
+            replaced = full.replace(full, sign_date)
+            if p.runs:
+                p.runs[0].text = replaced
+                for r in p.runs[1:]:
+                    r.text = ""
+            break
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def generate_approval_word(params: dict, student_count: int) -> bytes:
+    """Fill the approval form template with table-based replacement."""
+    from datetime import date
+    train_start = params.get("train_date_start", date.today())
+    train_end = params.get("train_date_end", date.today())
+
+    start_str = f"{train_start.year}.{train_start.month:02d}.{train_start.day:02d}"
+    end_str = f"{train_end.year}.{train_end.month:02d}.{train_end.day:02d}"
+    date_range = f"{start_str}-{end_str}"
+
+    cert_year = params.get("cert_year", "2026")
+    cert_start = int(params.get("cert_seq_start", "0001"))
+    cert_end = cert_start + student_count - 1
+    cert_range = f"CASEI-HYPX-{cert_year}-{str(cert_start).zfill(4)}  --  CASEI-HYPX-{cert_year}-{str(cert_end).zfill(4)}"
+
+    template = Path(__file__).parent / "审批表模板.docx"
+    import docx
+    doc = docx.Document(str(template))
+
+    table = doc.tables[0]
+    # Row 0: 项目名称 (col 1 merged across all cols — update first visible cell)
+    table.rows[0].cells[1].paragraphs[0].runs[0].text = params.get("project_name", "")
+    # Row 1: 培训时间 (cell 1), 培训地点 (cell 4)
+    table.rows[1].cells[1].paragraphs[0].runs[0].text = date_range
+    table.rows[1].cells[4].paragraphs[0].runs[0].text = params.get("train_location", "")
+    # Row 2: 项目负责人 (cell 1), 发证数量 (cell 4)
+    table.rows[2].cells[1].paragraphs[0].runs[0].text = params.get("person_in_charge", "")
+    table.rows[2].cells[4].paragraphs[0].runs[0].text = str(student_count)
+    # Row 6: 证书号码号段 (cell 0)
+    table.rows[6].cells[0].paragraphs[0].runs[0].text = f"证书号码（号段）\n{cert_range}"
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ─── Tab 5: Certificate issuance ───────────────────
+
+
 def render_tab_certificate():
-    """Tab 5: Certificate issuance table generator"""
+    """Tab 5: Certificate issuance — unified params, Excel + 2 Word docs"""
     st.subheader("学员证书发证表生成")
-    st.markdown("上传报到表")
 
     st.markdown("### 1. 上传学员数据")
     src = st.file_uploader("上传报到表 Excel", type=["xlsx", "xls"], key="cert_src")
@@ -1218,33 +1346,48 @@ def render_tab_certificate():
                         s[k] = ""
                 if s.get("姓名"):
                     students.append(s)
-            st.success("读取到 " + str(len(students)) + " 名学员")
-            import pandas as _pd
-            st.dataframe(_pd.DataFrame(students), use_container_width=True, hide_index=True)
+            st.success(f"读取到 {len(students)} 名学员")
+            st.dataframe(pd.DataFrame(students), use_container_width=True, hide_index=True)
         except Exception as e:
-            st.error("读取失败: " + str(e))
+            st.error(f"读取失败: {e}")
 
-    st.markdown("### 2. 填写参数")
-    col1, col2, col3 = st.columns(3)
+    st.markdown("### 2. 填写参数（Excel & Word 共用）")
+    col1, col2 = st.columns(2)
     with col1:
-        proj = st.text_input("项目名称", key="cert_proj")
-        loc = st.text_input("培训地点", key="cert_loc")
+        proj = st.text_input("项目名称（完整）",
+                             value="第四届起重机械检验检测与安全管理技术交流会",
+                             key="cert_proj")
+        loc = st.text_input("培训地点", value="开封", key="cert_loc")
     with col2:
-        train_date = st.text_input("培训日期", placeholder="2026年6月11日-13日", key="cert_train_date")
-        hours = st.text_input("学时", value="32", key="cert_hours")
-    with col3:
-        cert_year = st.text_input("证书编号-年份", value="2026", key="cert_year")
-        cert_seq = st.text_input("证书编号-起始号", placeholder="0530", key="cert_seq")
+        hours = st.text_input("学时", value="20", key="cert_hours")
         person = st.text_input("负责人", value="段秉泽", key="cert_person")
 
-    st.markdown("**发证日期**")
-    m_col, d_col = st.columns(2)
-    with m_col:
-        mon = st.selectbox("月", list(range(1, 13)), key="cert_mon")
-    with d_col:
-        day = st.selectbox("日", list(range(1, 32)), key="cert_day")
+    st.markdown("**培训日期（起止日期）**")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        s_mon = st.selectbox("起始月", list(range(1, 13)), index=3, key="cert_smon")  # default Apr
+    with c2:
+        s_day = st.selectbox("起始日", list(range(1, 32)), index=14, key="cert_sday")  # default 15
+    with c3:
+        e_mon = st.selectbox("结束月", list(range(1, 13)), index=3, key="cert_emon")  # default Apr
+    with c4:
+        e_day = st.selectbox("结束日", list(range(1, 32)), index=16, key="cert_eday")  # default 17
 
-    if not st.button("生成发证表", type="primary", key="cert_btn"):
+    st.markdown("**证书编号**")
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    with cc1:
+        cert_year = st.text_input("年份", value="2026", key="cert_year")
+    with cc2:
+        cert_seq = st.text_input("起始号", placeholder="0530", key="cert_seq")
+
+    st.markdown("**发证日期（默认 = 培训结束日）**")
+    cc3, cc4 = st.columns(2)
+    with cc3:
+        i_mon = st.selectbox("发证月", list(range(1, 13)), index=e_mon-1, key="cert_mon")
+    with cc4:
+        i_day = st.selectbox("发证日", list(range(1, 32)), index=e_day-1 if e_day-1 < 31 else 0, key="cert_day")
+
+    if not st.button("🚀 生成全部", type="primary", key="cert_btn"):
         return
     if not students:
         st.warning("请先上传报到表")
@@ -1254,28 +1397,56 @@ def render_tab_certificate():
         return
 
     from datetime import date
-    cert_date = date(int(cert_year), mon, day)
+    train_start = date(int(cert_year), s_mon, s_day)
+    train_end = date(int(cert_year), e_mon, e_day)
+    cert_date = date(int(cert_year), i_mon, i_day)
+
+    # Build unified params
     params = {
         "project_name": proj,
         "train_location": loc,
-        "train_date": train_date,
         "hours": hours,
         "cert_year": cert_year,
         "cert_seq_start": cert_seq,
         "person_in_charge": person,
+        "train_date_start": train_start,
+        "train_date_end": train_end,
+        "train_date": f"{train_start.year}年{train_start.month}月{train_start.day}日-{train_end.month}月{train_end.day}日",
     }
-    xlsx = generate_certificate_excel(students, cert_date, params)
-    safe_name = proj.replace("/", "-").replace("\\", "-") if proj else "发证表"
+
     end_seq = int(cert_seq) + len(students) - 1
-    log_work("证书发证表", str(len(students)) + " 人, 编号 " + cert_year + "-" + cert_seq + "~" + str(end_seq).zfill(4))
-    st.success("生成完成: " + str(len(students)) + " 条记录")
-    label = "CASEI-HYPX-" + cert_year + "-" + cert_seq + " ~ CASEI-HYPX-" + cert_year + "-" + str(end_seq).zfill(4)
+
+    # 1. Excel
+    xlsx = generate_certificate_excel(students, cert_date, params)
+    safe_name = proj.replace("/", "-").replace("\\", "-")[:40] if proj else "发证表"
+
+    # 2. Word: training certificate template
+    cert_word = generate_certificate_word(params)
+
+    # 3. Word: approval form
+    approval_word = generate_approval_word(params, len(students))
+
+    # Log
+    log_work("证书发证表", f"{len(students)} 人, 编号 {cert_year}-{cert_seq}~{str(end_seq).zfill(4)}")
+    st.success(f"生成完成: {len(students)} 条记录")
+
+    label = f"CASEI-HYPX-{cert_year}-{cert_seq} ~ CASEI-HYPX-{cert_year}-{str(end_seq).zfill(4)}"
     st.metric("证书编号范围", label)
 
-    st.download_button("下载发证表 Excel", data=xlsx,
-                       file_name=safe_name + "_证书发证表.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       type="primary")
+    # Download buttons
+    dl1, dl2, dl3 = st.columns(3)
+    with dl1:
+        st.download_button("📥 发证表 Excel", data=xlsx,
+                          file_name=f"{safe_name}_证书发证表.xlsx",
+                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with dl2:
+        st.download_button("📥 培训证明 Word", data=cert_word,
+                          file_name=f"{safe_name}_培训证明.docx",
+                          mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with dl3:
+        st.download_button("📥 审批表 Word", data=approval_word,
+                          file_name=f"{safe_name}_审批表.docx",
+                          mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
 # ─── Tab 4: 学员报到表 ─────────────────────────────
