@@ -1538,6 +1538,10 @@ def render_tab_report(project_name):
     # Build rows
     display_df = df[selected].copy()
 
+    # Dedup by name + ID
+    if '姓名' in display_df.columns and '身份证' in display_df.columns:
+        display_df = display_df.drop_duplicates(subset=['姓名', '身份证'], keep='first').reset_index(drop=True)
+
     # Sort: by 省份 first, then by 纳税人名称/单位名称
     sort_cols = []
     for c in selected:
@@ -1587,7 +1591,7 @@ def render_tab_report(project_name):
     ws.page_margins.bottom = 0.5
 
     # Repeat header row on each printed page
-    ws.print_title_rows = '2:2'
+    ws.print_title_rows = '1:1'
 
     thin = Border(left=Side('thin'), right=Side('thin'),
                   top=Side('thin'), bottom=Side('thin'))
@@ -1620,17 +1624,12 @@ def render_tab_report(project_name):
     # Widths for extra columns
     extra_widths = [10, 10, 10, 14]
 
-    # Row 1: Title
-    last_col = get_column_letter(num_cols)
-    ws.merge_cells(f'A1:{last_col}1')
-    ws['A1'] = title
-    ws['A1'].font = title_font
-    ws['A1'].alignment = center_wrap
-    ws.row_dimensions[1].height = 42
+    # Print header (doesn't block Excel filtering)
+    ws.oddHeader.center.text = title
 
-    # Row 2: Headers
+    # Row 1: Headers
     for ci, h in enumerate(all_headers, 1):
-        cell = ws.cell(row=2, column=ci, value=str(h))
+        cell = ws.cell(row=1, column=ci, value=str(h))
         cell.font = header_font
         cell.alignment = center_wrap
         cell.border = thin
@@ -1640,11 +1639,11 @@ def render_tab_report(project_name):
         else:
             ei = ci - len(selected) - 1
             ws.column_dimensions[get_column_letter(ci)].width = extra_widths[ei] if ei < len(extra_widths) else 12
-    ws.row_dimensions[2].height = 30
+    ws.row_dimensions[1].height = 30
 
     # Data + blank rows
     for ri in range(total):
-        row_num = 3 + ri
+        row_num = 2 + ri
         ws.row_dimensions[row_num].height = 35
         if ri < n_data:
             row = display_df.iloc[ri]
