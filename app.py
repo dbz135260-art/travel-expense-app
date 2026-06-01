@@ -1585,10 +1585,10 @@ def render_tab_report(project_name):
     ws.page_setup.orientation = 'landscape'
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
-    ws.page_margins.left = 0.4
-    ws.page_margins.right = 0.4
-    ws.page_margins.top = 0.5
-    ws.page_margins.bottom = 0.5
+    ws.page_margins.left = 1.0
+    ws.page_margins.right = 1.0
+    ws.page_margins.top = 1.0
+    ws.page_margins.bottom = 1.0
 
     # Repeat header row on each printed page
     ws.print_title_rows = '1:1'
