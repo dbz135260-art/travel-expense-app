@@ -1625,7 +1625,7 @@ def render_tab_report(project_name):
     extra_widths = [10, 10, 10, 14]
 
     # Print header (doesn't block Excel filtering)
-    ws.oddHeader.center.text = title
+    ws.oddHeader.center.text = f"&20&B{title}"
 
     # Row 1: Headers
     for ci, h in enumerate(all_headers, 1):
