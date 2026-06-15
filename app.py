@@ -620,7 +620,7 @@ def main():
         st.header("配置")
         default_key = st.secrets.get("DEEPSEEK_API_KEY", "")
         api_key = st.text_input("DeepSeek API Key", type="password", value=default_key)
-        default_qwen = st.secrets.get("QWEN_API_KEY", "")
+        default_qwen = st.secrets.get("QWEN_API_KEY", "sk-ws-H.REEHRRR.E2UI.MEUCIQDRLqVnugBN6u_4PSDKSFePWPIE4hCBtDEKKQolKPMocwIgbUJJPE5Freq-fajv-RfeELmAxa3EmYHY8woo-PHTZlE")
         qwen_key = st.text_input("阿里千问API Key（可选，发票识别用）", type="password", value=default_qwen,
                                  help="图片型PDF需要，阿里云DashScope获取")
         project_name = st.text_input("项目名称", value="2026-N4-PX")
