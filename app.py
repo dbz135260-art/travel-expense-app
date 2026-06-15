@@ -54,14 +54,23 @@ def _pdf_to_image_base64(file_bytes: bytes, page_num: int = 0) -> str:
 
 
 def _has_amount_info(text: str) -> bool:
-    """Check if extracted text contains any amount/number near amount keywords."""
-    amount_kw = ['合计', '票价', '金额', 'CNY', '¥', '￥', '元', '燃油', '民航']
-    for kw in amount_kw:
+    """Check if text layer has real amounts (not just invoice numbers)."""
+    # Match "合计 X.XX" or "合计: X.XX" or "合计CNY X.XX"
+    if re.search(r'合计\s*[：:CNY¥￥\s]*\d+\.\d{2}', text):
+        return True
+    # Match "票价 X.XX" near keyword
+    if re.search(r'票价\s*[：:CNY¥￥\s]*\d+\.\d{2}', text):
+        return True
+    # Match nearby amount patterns
+    for kw in ['合计', '票价', '金额']:
         idx = text.find(kw)
         if idx >= 0:
-            nearby = text[max(0, idx):idx + 150]
-            if re.search(r'\d+\.?\d*', nearby):
-                return True
+            nearby = text[idx:idx + 80]
+            nums = re.findall(r'\d+\.\d{2}', nearby)
+            for n in nums:
+                v = float(n)
+                if 0 < v < 999999:
+                    return True
     return False
 
 
@@ -159,87 +168,6 @@ def extract_pdf_text(file_bytes: bytes) -> str:
         return "\n".join(text_parts)
     except Exception as e:
         return f"[PDF解析错误: {str(e)}]"
-
-
-# ─── OCR via Qwen-VL API (zero extra dependencies) ──
-
-QWEN_OCR_PROMPT = """你是一个发票OCR助手。从图片中逐字识别所有文字，保持数字和中文原样输出。
-
-特别关注：
-1. 姓名、旅客姓名
-2. 金额（票价、合计、实付金额等）
-3. 日期
-4. 发票号码
-5. 任何数字数据
-
-输出格式：直接把识别到的文字按行输出。"""
-
-def _has_amount_info(text: str) -> bool:
-    """Check if extracted text contains any amount/number near amount keywords."""
-    amount_kw = ['合计', '票价', '金额', 'CNY', '¥', '￥', '元', '燃油', '民航']
-    for kw in amount_kw:
-        idx = text.find(kw)
-        if idx >= 0:
-            nearby = text[max(0, idx):idx + 150]
-            if re.search(r'\d+\.?\d*', nearby):
-                return True
-    return False
-
-
-def _pdf_to_image_base64(file_bytes: bytes, page_num: int = 0) -> str:
-    """Render a PDF page as a PNG image, return base64."""
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    page = doc[page_num]
-    pix = page.get_pixmap(dpi=200)
-    img_bytes = pix.tobytes("png")
-    doc.close()
-    return base64.b64encode(img_bytes).decode("utf-8")
-
-
-def _call_qwen_ocr(image_base64: str, api_key: str) -> str:
-    """Call Qwen-VL API to do OCR on a base64 image."""
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": QWEN_VL_MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": f"data:image/png;base64,{image_base64}"},
-                {"type": "text", "text": QWEN_OCR_PROMPT}
-            ]
-        }],
-        "temperature": 0.01
-    }
-    resp = requests.post(QWEN_VL_API_URL, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
-
-
-def smart_extract_pdf(file_bytes: bytes, qwen_api_key: str = "") -> str:
-    """Extract text, fall back to Qwen-VL OCR if text layer is missing amounts."""
-    # Step 1: try text extraction
-    text = extract_pdf_text(file_bytes)
-    if _has_amount_info(text):
-        return text
-
-    # Step 2: try OCR via Qwen-VL (if API key provided)
-    if not qwen_api_key:
-        return text
-    try:
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-        pages = len(doc)
-        doc.close()
-        texts = []
-        for p in range(pages):
-            img_b64 = _pdf_to_image_base64(file_bytes, p)
-            ocr_result = _call_qwen_ocr(img_b64, qwen_api_key)
-            texts.append(ocr_result)
-        combined = "\n".join(texts)
-        if combined.strip():
-            return combined
-    except Exception:
-        pass
-    return text
 
 
 def parse_json_response(content: str) -> List[Dict]:
