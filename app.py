@@ -16,8 +16,11 @@ st.set_page_config(page_title="差旅/劳务费处理", page_icon="🧾", layout
 if "work_log" not in st.session_state:
     st.session_state.work_log = []
 
-QWEN_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-QWEN_MODEL = "qwen3.7-plus"
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+
+QWEN_VL_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+QWEN_VL_MODEL = "qwen3.7-plus"
 
 # ─── OFD Parser ────────────────────────────────────────
 
@@ -93,39 +96,16 @@ def extract_pdf_text(file_bytes: bytes) -> str:
 
 # ─── OCR via Qwen-VL API (zero extra dependencies) ──
 
-# ─── Qwen3.7-Plus API (unified: text + image) ───────
+QWEN_OCR_PROMPT = """你是一个发票OCR助手。从图片中逐字识别所有文字，保持数字和中文原样输出。
 
-def call_qwen(api_key: str, system_prompt: str, user_prompt: str,
-              image_base64: str = "", max_tokens: int = 4096) -> str:
-    """Call Qwen3.7-Plus with optional image input."""
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    content = []
-    if image_base64:
-        content.append({"type": "image_url", "image_url": f"data:image/png;base64,{image_base64}"})
-    content.append({"type": "text", "text": user_prompt})
-    payload = {
-        "model": QWEN_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": content}
-        ],
-        "temperature": 0.01,
-        "max_tokens": max_tokens
-    }
-    resp = requests.post(QWEN_API_URL, headers=headers, json=payload, timeout=120)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+特别关注：
+1. 姓名、旅客姓名
+2. 金额（票价、合计、实付金额等）
+3. 日期
+4. 发票号码
+5. 任何数字数据
 
-
-def _pdf_to_image_base64(file_bytes: bytes, page_num: int = 0) -> str:
-    """Render a PDF page as a PNG image, return base64."""
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    page = doc[page_num]
-    pix = page.get_pixmap(dpi=200)
-    img_bytes = pix.tobytes("png")
-    doc.close()
-    return base64.b64encode(img_bytes).decode("utf-8")
-
+输出格式：直接把识别到的文字按行输出。"""
 
 def _has_amount_info(text: str) -> bool:
     """Check if extracted text contains any amount/number near amount keywords."""
@@ -139,11 +119,43 @@ def _has_amount_info(text: str) -> bool:
     return False
 
 
+def _pdf_to_image_base64(file_bytes: bytes, page_num: int = 0) -> str:
+    """Render a PDF page as a PNG image, return base64."""
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    page = doc[page_num]
+    pix = page.get_pixmap(dpi=200)
+    img_bytes = pix.tobytes("png")
+    doc.close()
+    return base64.b64encode(img_bytes).decode("utf-8")
+
+
+def _call_qwen_ocr(image_base64: str, api_key: str) -> str:
+    """Call Qwen-VL API to do OCR on a base64 image."""
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": QWEN_VL_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": f"data:image/png;base64,{image_base64}"},
+                {"type": "text", "text": QWEN_OCR_PROMPT}
+            ]
+        }],
+        "temperature": 0.01
+    }
+    resp = requests.post(QWEN_VL_API_URL, headers=headers, json=payload, timeout=60)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
 def smart_extract_pdf(file_bytes: bytes, qwen_api_key: str = "") -> str:
     """Extract text, fall back to Qwen-VL OCR if text layer is missing amounts."""
+    # Step 1: try text extraction
     text = extract_pdf_text(file_bytes)
     if _has_amount_info(text):
         return text
+
+    # Step 2: try OCR via Qwen-VL (if API key provided)
     if not qwen_api_key:
         return text
     try:
@@ -153,17 +165,30 @@ def smart_extract_pdf(file_bytes: bytes, qwen_api_key: str = "") -> str:
         texts = []
         for p in range(pages):
             img_b64 = _pdf_to_image_base64(file_bytes, p)
-            ocr_text = call_qwen(qwen_api_key,
-                "你是一个发票OCR助手，逐字识别图片中的文字。",
-                "逐字识别这张图片上的所有文字，保持数字和中文原样输出。",
-                image_base64=img_b64, max_tokens=2048)
-            texts.append(ocr_text)
+            ocr_result = _call_qwen_ocr(img_b64, qwen_api_key)
+            texts.append(ocr_result)
         combined = "\n".join(texts)
         if combined.strip():
             return combined
     except Exception:
         pass
     return text
+
+
+def call_deepseek(api_key: str, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.01,
+        "max_tokens": max_tokens
+    }
+    resp = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=120)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 def parse_json_response(content: str) -> List[Dict]:
@@ -593,8 +618,11 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("配置")
-        default_qwen = st.secrets.get("QWEN_API_KEY", "sk-ws-H.REEHRRR.E2UI.MEUCIQDRLqVnugBN6u_4PSDKSFePWPIE4hCBtDEKKQolKPMocwIgbUJJPE5Freq-fajv-RfeELmAxa3EmYHY8woo-PHTZlE")
-        api_key = st.text_input("通义千问 API Key", type="password", value=default_qwen)
+        default_key = st.secrets.get("DEEPSEEK_API_KEY", "")
+        api_key = st.text_input("DeepSeek API Key", type="password", value=default_key)
+        default_qwen = st.secrets.get("QWEN_API_KEY", "")
+        qwen_key = st.text_input("阿里千问API Key（可选，发票识别用）", type="password", value=default_qwen,
+                                 help="图片型PDF需要，阿里云DashScope获取")
         project_name = st.text_input("项目名称", value="2026-N4-PX")
         project_code = st.text_input("项目号", value="2026-N4-PX")
 
@@ -676,9 +704,9 @@ def main():
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["💰 差旅补助计算", "✈️ 老师差旅报销", "👨‍🏫 老师劳务费发放", "📋 学员报到表", "📜 学员证书发证表"])
 
     with tab1:
-        render_tab_subsidy(api_key, project_name)
+        render_tab_subsidy(api_key, project_name, qwen_key)
     with tab2:
-        render_tab_travel(api_key, project_name, project_code)
+        render_tab_travel(api_key, project_name, project_code, qwen_key)
     with tab3:
         render_tab_labor(project_name, project_code)
     with tab4:
@@ -687,7 +715,7 @@ def main():
         render_tab_certificate()
 
 
-def render_tab_subsidy(api_key, project_name):
+def render_tab_subsidy(api_key, project_name, qwen_key=""):
     """原差旅补助计算——名字直接用，不加前缀"""
     st.subheader("差旅补助计算")
 
@@ -700,7 +728,7 @@ def render_tab_subsidy(api_key, project_name):
     if not st.button("🚀 开始计算", type="primary", key="subsidy_btn"):
         return
     if not api_key:
-        st.error("请先在左侧输入通义千问 API Key")
+        st.error("请在左侧输入 DeepSeek API Key 后再试")
         return
 
     progress_bar = st.progress(0, text="解析PDF中...")
@@ -711,12 +739,12 @@ def render_tab_subsidy(api_key, project_name):
     for i, f in enumerate(uploaded_files):
         bytes_data = f.read()
         file_map[f.name] = bytes_data
-        text = smart_extract_pdf(bytes_data, api_key)
+        text = smart_extract_pdf(bytes_data, qwen_key)
         pdf_texts.append(f"【文件{i+1}: {f.name}】\n{text}")
         progress_bar.progress((i + 1) / (len(uploaded_files) + 2))
 
     combined_text = "\n\n---\n\n".join(pdf_texts)
-    status_text.text("调用通义千问解析...")
+    status_text.text("调用 DeepSeek API...")
     progress_bar.progress(0.6)
 
     sys_prompt = """从PDF行程单中提取信息，不要计算。
@@ -730,7 +758,7 @@ def render_tab_subsidy(api_key, project_name):
     user_prompt = f"项目名称：{project_name}\n\n文件内容：\n{combined_text}"
 
     try:
-        raw = call_qwen(api_key, sys_prompt, user_prompt)
+        raw = call_deepseek(api_key, sys_prompt, user_prompt)
     except Exception as e:
         st.error(f"API调用失败: {e}")
         return
@@ -822,7 +850,7 @@ def render_tab_subsidy(api_key, project_name):
                           file_name=f"{project_name}_改名文件.zip", mime="application/zip")
 
 
-def render_tab_travel(api_key, project_name, project_code):
+def render_tab_travel(api_key, project_name, project_code, qwen_key=""):
     """老师差旅报销——Excel姓名写老师原名，文件改名加'段'前缀"""
     st.subheader("老师差旅报销")
     st.markdown("""
@@ -857,7 +885,7 @@ def render_tab_travel(api_key, project_name, project_code):
     if not st.button("🚀 处理并生成", type="primary", key="travel_btn"):
         return
     if not api_key:
-        st.error("请先在左侧输入通义千问 API Key")
+        st.error("请在左侧输入 DeepSeek API Key 后再试")
         return
     if not teachers:
         st.info("未提供老师信息，将直接从文件提取（银行卡号为空）")
@@ -883,19 +911,19 @@ def render_tab_travel(api_key, project_name, project_code):
                 "原始文本": parsed.get("原始文本", "")
             })
         else:
-            text = smart_extract_pdf(bytes_data, api_key)
+            text = smart_extract_pdf(bytes_data, qwen_key)
             pdf_texts.append(f"【文件{i+1}: {f.name}】\n{text}")
             file_data.append({"文件名": f.name, "类型": "pdf", "原始文本": text})
         progress_bar.progress((i + 1) / (len(uploaded_files) + 2))
 
     # LLM for PDFs
     if pdf_texts:
-        status_text.text("调用通义千问解析PDF...")
+        status_text.text("调用DeepSeek解析PDF...")
         progress_bar.progress(0.6)
         combined = "\n\n---\n\n".join(pdf_texts)
         try:
-            llm_raw = call_qwen(api_key, TRAVEL_EXTRACT_PROMPT,
-                                f"项目名称：{project_name}\n\n文件内容：\n{combined}")
+            llm_raw = call_deepseek(api_key, TRAVEL_EXTRACT_PROMPT,
+                                    f"项目名称：{project_name}\n\n文件内容：\n{combined}")
             llm_data = parse_json_response(llm_raw)
             for item in llm_data:
                 for fd in file_data:
