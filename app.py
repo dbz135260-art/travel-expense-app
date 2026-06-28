@@ -632,7 +632,10 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("配置")
-        default_qwen = st.secrets.get("QWEN_API_KEY", "")
+        try:
+            default_qwen = st.secrets.get("QWEN_API_KEY", "")
+        except Exception:
+            default_qwen = ""
         api_key = st.text_input("通义千问 API Key", type="password", value=default_qwen,
                                 help="阿里云百炼获取，用于发票识别")
         project_name = st.text_input("项目名称", value="2026-N4-PX")
